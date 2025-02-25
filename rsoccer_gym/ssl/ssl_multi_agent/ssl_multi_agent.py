@@ -13,9 +13,6 @@ from gymnasium.wrappers import RecordVideo
 import random
 from rsoccer_gym.Utils.Utils import Geometry2D
 
-GOAL_REWARD = 10
-OUTSIDE_REWARD = -10
-
 class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
     default_players = 3
     def __init__(self,
@@ -24,8 +21,9 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         fps=40,
         match_time=40,
         stack_observation=8,
-        render_mode='human'
-
+        render_mode='human',
+        dense_rewards = {},
+        sparse_rewards = {},
     ):
 
         self.n_robots_blue = min(len(init_pos["blue"]), 3)
@@ -40,6 +38,8 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             max_ep_length=int(match_time*fps),
             render_mode=render_mode
         )
+        self.dense_rewards = dense_rewards
+        self.sparse_rewards = sparse_rewards
         self.geometry = Geometry2D(-self.field.length/2, self.field.length/2, -self.field.width/2, self.field.width/2)
         self.goal_template = namedtuple('goal', ['x', 'y'])
         self.ball_template = namedtuple('ball', ['x', 'y', 'v_x', 'v_y'])
@@ -127,7 +127,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             **{f"blue_{idx}":  0 for idx in range(self.n_robots_blue)},
             **{f"yellow_{idx}": 0 for idx in range(self.n_robots_yellow)},
         }
-        for weight, reward_func, list_attr in self.rewards:
+        for weight, reward_func, list_attr in self.dense_rewards:
             kwargs = {attr: getattr(self, attr) for attr in list_attr}
             reward_result = reward_func(
                 self.field, self.frame, self.last_frame, 
@@ -147,27 +147,27 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             done = {'__all__': True}
             self.score['blue'] += 1
 
-            reward_agents.update({f'blue_{i}': GOAL_REWARD for i in range(self.n_robots_blue)})
-            reward_agents.update({f'yellow_{i}': -GOAL_REWARD for i in range(self.n_robots_yellow)})
+            reward_agents.update({f'blue_{i}': self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_blue)})
+            reward_agents.update({f'yellow_{i}': -self.sparse_rewards.get("GOAL_REWARD", 0)for i in range(self.n_robots_yellow)})
         
         elif ball.x <= -half_len and abs(ball.y) < half_goal_wid:
             done = {'__all__': True}
             self.score['yellow'] += 1
 
-            reward_agents.update({f'blue_{i}': -GOAL_REWARD for i in range(self.n_robots_blue)})
-            reward_agents.update({f'yellow_{i}': GOAL_REWARD for i in range(self.n_robots_yellow)})
+            reward_agents.update({f'blue_{i}': -self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_blue)})
+            reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_yellow)})
         
         elif ball.x <= -half_len or ball.x >= half_len:
-            reward_agents.update({f'blue_{i}': OUTSIDE_REWARD for i in range(self.n_robots_blue)})
-            reward_agents.update({f'yellow_{i}': OUTSIDE_REWARD for i in range(self.n_robots_yellow)})
+            reward_agents.update({f'blue_{i}': self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
+            reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
 
             initial_pos_frame: Frame = self._get_initial_positions_frame(42)
             self.rsim.reset(initial_pos_frame)
             self.frame = self.rsim.get_frame()
         
         elif (ball.y <= -half_wid or ball.y >= half_wid):
-            reward_agents.update({f'blue_{i}': OUTSIDE_REWARD for i in range(self.n_robots_blue)})
-            reward_agents.update({f'yellow_{i}': OUTSIDE_REWARD for i in range(self.n_robots_yellow)})
+            reward_agents.update({f'blue_{i}': self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
+            reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
 
             initial_pos_frame: Frame = self._get_initial_positions_frame(42)
             self.rsim.reset(initial_pos_frame)
