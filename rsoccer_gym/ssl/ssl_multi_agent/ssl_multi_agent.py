@@ -34,8 +34,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             field_type=field_type, 
             n_robots_blue=self.n_robots_blue,
             n_robots_yellow=self.n_robots_yellow, 
-            time_step=1/fps, 
-            max_ep_length=int(match_time*fps),
+            time_step=1/fps,
             render_mode=render_mode
         )
         self.dense_rewards = dense_rewards
@@ -181,8 +180,8 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         self.sent_commands = None
 
         # Close render window
-        del(self.view)
-        self.view = None
+        # del(self.view)
+        # self.view = None
 
         initial_pos_frame: Frame = self._get_initial_positions_frame(seed)
         self.rsim.reset(initial_pos_frame)
