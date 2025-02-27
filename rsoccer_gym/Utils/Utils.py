@@ -76,3 +76,11 @@ class Geometry2D():
         dist = np.linalg.norm(diff_vec)
 
         return np.clip(dist / max_dist, 0, 1)
+    
+
+def show_reward(reward_func, robot='blue_0'):
+    def wrapper(*args, **kwargs):
+        reward = reward_func(*args, **kwargs)
+        print(f"{reward_func.__name__} - {robot} {reward[robot]}")
+        return reward
+    return wrapper
