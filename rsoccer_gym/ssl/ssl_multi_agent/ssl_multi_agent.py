@@ -24,6 +24,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         render_mode='human',
         dense_rewards = {},
         sparse_rewards = {},
+        observation_class = None
     ):
 
         self.n_robots_blue = min(len(init_pos["blue"]), 3)
@@ -39,6 +40,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         )
         self.dense_rewards = dense_rewards
         self.sparse_rewards = sparse_rewards
+        self.observation_class = observation_class
         self.geometry = Geometry2D(-self.field.length/2, self.field.length/2, -self.field.width/2, self.field.width/2)
         self.goal_template = namedtuple('goal', ['x', 'y'])
         self.ball_template = namedtuple('ball', ['x', 'y', 'v_x', 'v_y'])
@@ -283,10 +285,16 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             goal_adv = self.goal_template(x=   0.2 + self.field.length/2, y=0)
             goal_ally = self.goal_template(x= -0.2 - self.field.length/2, y=0)
 
-            robot_obs = self.robot_observation(robot, allys, advs, robot_action, allys_actions, ball, goal_adv, goal_ally)
+            # Calcula observacoes usando classe configurada
+            robot_obs = self.observation_class.compute_observations(
+                robot, allys, advs, robot_action, allys_actions, ball, goal_adv, goal_ally,
+                self.steps
+            )
+            
             self.observations[f'blue_{i}'] = np.delete(self.observations[f'blue_{i}'], range(len(robot_obs)))
             self.observations[f'blue_{i}'] = np.concatenate([self.observations[f'blue_{i}'], robot_obs], axis=0, dtype=np.float64)
-
+            
+            
             # if i == 1:
             #     print(f"blue_{i}")
             #     print(f"\tX={robot.x}\tY={robot.y}\tTheta={robot.theta}\tVx={robot.v_x}\tVy={robot.v_y}\tVtheta={robot.v_theta}")
@@ -304,10 +312,15 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             goal_adv = self.goal_template(x=  -(-0.2 - self.field.length/2), y=0)
             goal_ally = self.goal_template(x= -( 0.2 + self.field.length/2), y=0)
             
-            robot_obs = self.robot_observation(robot, allys, advs, robot_action, allys_actions, ball, goal_adv, goal_ally)
+            # Calcula observacoes usando classe configurada
+            robot_obs = self.observation_class.compute_observations(
+                robot, allys, advs, robot_action, allys_actions, ball, goal_adv, goal_ally,
+                self.steps
+            )
 
             self.observations[f'yellow_{i}'] = np.delete(self.observations[f'yellow_{i}'], range(len(robot_obs)))
             self.observations[f'yellow_{i}'] = np.concatenate([self.observations[f'yellow_{i}'], robot_obs], axis=0, dtype=np.float64)
+            
 
             # if i == 1:
             #     print(f"\nyellow_{i}")
