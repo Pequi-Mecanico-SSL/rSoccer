@@ -61,6 +61,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         self.init_pos = init_pos
 
         self.obs_size = 77 #obs[f'blue_0'].shape[0]
+        #self.obs_size = 33
         self.act_size = 4
 
         self.actions_bound = {"low": -1, "high": 1}
@@ -334,6 +335,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
 
         positions.append([x_r, y_r])
         orientations.append([sin_r, cos_r, theta_r])
+        #orientations.append([theta_r])
         dists.append([dist_BR, dist_BG_al, dist_BG_ad])
         angles.append([
             sin_BR, cos_BR, theta_BR, 
@@ -347,6 +349,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             ally_dist = self.geometry._get_dist_between(ally, robot)
             positions.append([x_al, y_al])
             orientations.append([sin_al, cos_al, theta_al])
+            #orientations.append([theta_al])
             dists.append([ally_dist])
             angles.append([sin_AlR, cos_AlR, theta_AlR])
         
@@ -357,6 +360,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             ally_dist = 0
             positions.append([x_al, y_al])
             orientations.append([sin_al, cos_al, theta_al])
+            # orientations.append([theta_al])
             dists.append([ally_dist])
             angles.append([sin_AlR, cos_AlR, theta_AlR])
 
@@ -367,6 +371,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             adv_dist = self.geometry._get_dist_between(adv, robot)
             positions.append([x_adv, y_adv])
             orientations.append([sin_adv, cos_adv, theta_adv])
+            #orientations.append([theta_adv])
             dists.append([adv_dist])
             angles.append([sin_AdR, cos_AdR, theta_AdR])
 
@@ -376,6 +381,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             adv_dist = 0
             positions.append([x_adv, y_adv])
             orientations.append([sin_adv, cos_adv, theta_adv])
+            #orientations.append([theta_adv])
             dists.append([adv_dist])
             angles.append([sin_AdR, cos_AdR, theta_AdR])
 
@@ -389,6 +395,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
 
         #print(f"len_pos: {len(positions)} \t len_ori: {len(orientations)} \t len_dist: {len(dists)} \t len_ang: {len(angles)} \t len_last_act: {len(last_actions)} \t len_time_left: {len(time_left)}")
         robot_obs = np.concatenate([positions, orientations, dists, angles, last_actions, time_left], dtype=np.float64)
+        # robot_obs = np.concatenate([positions, last_actions, time_left], dtype=np.float64)
         return robot_obs
     
     def step(self, action):
