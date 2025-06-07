@@ -398,6 +398,50 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         # robot_obs = np.concatenate([positions, last_actions, time_left], dtype=np.float64)
         return robot_obs
     
+    def _friendly_observation(self, obs):
+        friendly_obs = {'pos': {}, 'ori': {}, 'dist': {}, 'ang': {}, 'last_act': {}, 'time_left': {}}
+
+        friendly_obs["pos"]["robot"]   = obs[ 0: 2]
+        friendly_obs["pos"][f"ally_0"] = obs[ 2: 4]
+        friendly_obs["pos"][f"ally_1"] = obs[ 4: 6]
+        friendly_obs["pos"][f"adv_0"]  = obs[ 6: 8]
+        friendly_obs["pos"][f"adv_1"]  = obs[ 8:10]
+        friendly_obs["pos"][f"adv_2"]  = obs[10:12]
+        friendly_obs["pos"]["ball"]    = obs[12:14]
+
+        friendly_obs["ori"]["robot"]   = obs[14:17]
+        friendly_obs["ori"][f"ally_0"] = obs[17:20]
+        friendly_obs["ori"][f"ally_1"] = obs[20:23]
+        friendly_obs["ori"][f"adv_0"]  = obs[23:26]
+        friendly_obs["ori"][f"adv_1"]  = obs[26:29]
+        friendly_obs["ori"][f"adv_2"]  = obs[29:32]
+
+        friendly_obs["dist"]["dist_BR"]    = obs[32:33]
+        friendly_obs["dist"]["dist_BG_al"] = obs[33:34]
+        friendly_obs["dist"]["dist_BG_ad"] = obs[34:35]
+        friendly_obs["dist"]["ally_0"]     = obs[35:36]
+        friendly_obs["dist"]["ally_1"]     = obs[36:37]
+        friendly_obs["dist"]["adv_0"]      = obs[37:38]
+        friendly_obs["dist"]["adv_1"]      = obs[38:39]
+        friendly_obs["dist"]["adv_2"]      = obs[39:40]
+
+        friendly_obs["ang"]["ball_robot"]     = obs[40:43]
+        friendly_obs["ang"]["ball_goal_ally"] = obs[43:46]
+        friendly_obs["ang"]["ball_goal_adv"]  = obs[46:49]
+        friendly_obs["ang"]["ally_0"]         = obs[49:52]
+        friendly_obs["ang"]["ally_1"]         = obs[52:55]
+        friendly_obs["ang"]["adv_0"]          = obs[55:58]
+        friendly_obs["ang"]["adv_1"]          = obs[58:61]
+        friendly_obs["ang"]["adv_2"]          = obs[61:64]
+
+        friendly_obs["last_act"]["robot"]   = obs[64:68]
+        friendly_obs["last_act"][f"ally_0"] = obs[68:72]
+        friendly_obs["last_act"][f"ally_1"] = obs[72:76]
+
+        friendly_obs["time_left"] = obs[76:77]
+
+        return friendly_obs
+    
     def step(self, action):
         self.steps += 1
         # Join agent action with environment actions
