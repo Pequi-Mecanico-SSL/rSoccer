@@ -12,10 +12,12 @@ import copy
 from gymnasium.wrappers import RecordVideo
 import random
 from rsoccer_gym.Utils.Utils import Geometry2D
+from rsoccer_gym.judges.ssl_judge import Judge
 
 class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
     default_players = 3
     def __init__(self,
+        judge: Judge,
         init_pos,
         field_type=2, 
         fps=40,
@@ -24,6 +26,8 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         render_mode='human',
         dense_rewards = {},
         sparse_rewards = {},
+        possession_radius_scale=3,
+        direction_change_threshold=1
     ):
 
         self.n_robots_blue = min(len(init_pos["blue"]), 3)
@@ -79,6 +83,16 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             **{f'yellow_{i}': np.zeros(self.stack_observation * self.obs_size, dtype=np.float64) for i in range(self.n_robots_yellow)}
         }
 
+        init_frame = self._get_initial_positions_frame(42)
+        self.judge = judge(
+            field=self.field, 
+            initial_frame=init_frame, 
+            possession_radius_scale=possession_radius_scale, 
+            direction_change_threshold=direction_change_threshold
+        )
+        self.judge_last_status, self.judge_last_info = None, None
+        self.judge_status, self.judge_info = self.judge.judge(init_frame)
+
     def _get_commands(self, actions):
         commands = []
         for i in range(self.n_robots_blue):
@@ -118,10 +132,12 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
 
 
     def _calculate_reward_done(self):
+        self.judge_last_status = self.judge_status
+        self.judge_last_info = self.judge_info
+        self.judge_status, self.judge_info = self.judge.judge(self.frame)
 
         done = {'__all__': False}
         truncated = {'__all__': False}
-        ball = self.frame.ball
 
         reward_agents = {
             **{f"blue_{idx}":  0 for idx in range(self.n_robots_blue)},
@@ -137,37 +153,24 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
 
             for agent, reward in reward_result.items():
                 reward_agents[agent] += weight * reward
-
-        half_len = self.field.length/2 
-        half_wid = self.field.width/2
-        half_goal_wid = self.field.goal_width / 2
-
         
-        if ball.x >= half_len and abs(ball.y) < half_goal_wid:
+        if self.judge_status == "RIGHT_GOAL":
             done = {'__all__': True}
             self.score['blue'] += 1
 
             reward_agents.update({f'blue_{i}': self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_blue)})
             reward_agents.update({f'yellow_{i}': -self.sparse_rewards.get("GOAL_REWARD", 0)for i in range(self.n_robots_yellow)})
         
-        elif ball.x <= -half_len and abs(ball.y) < half_goal_wid:
+        elif self.judge_status == "LEFT_GOAL":
             done = {'__all__': True}
             self.score['yellow'] += 1
 
             reward_agents.update({f'blue_{i}': -self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_blue)})
             reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_yellow)})
         
-        elif ball.x <= -half_len or ball.x >= half_len:
-            reward_agents.update({f'blue_{i}': self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
-            reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
-
-            initial_pos_frame: Frame = self._get_initial_positions_frame(42)
-            self.rsim.reset(initial_pos_frame)
-            self.frame = self.rsim.get_frame()
-        
-        elif (ball.y <= -half_wid or ball.y >= half_wid):
-            reward_agents.update({f'blue_{i}': self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
-            reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
+        elif self.judge_status in ["RIGHT_BOTTOM_LINE", "LEFT_BOTTOM_LINE", "LOWER_SIDELINE", "UPPER_SIDELINE"]:
+            last_touch = self.judge_info["last_touch"]
+            reward_agents.update({last_touch: self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
 
             initial_pos_frame: Frame = self._get_initial_positions_frame(42)
             self.rsim.reset(initial_pos_frame)
