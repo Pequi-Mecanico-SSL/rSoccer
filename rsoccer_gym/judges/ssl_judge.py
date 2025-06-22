@@ -104,26 +104,30 @@ class Judge():
         """
         
         ball = self.frame.ball
+        n_blue = len(self.frame.robots_blue)
         robots = {
             **self.frame.robots_blue,
-            **self.frame.robots_yellow
+            **{idx+n_blue: robot for idx, robot in self.frame.robots_yellow.items()}
         }
 
         closest_robot: Robot = None
         min_distance = float('inf')
 
-        for robot in robots:
+        for idx, robot in robots.items():
             distance = math.hypot(ball.x - robot.x, ball.y - robot.y)
             if distance < min_distance:
                 min_distance = distance
                 closest_robot = robot
+                closest_robot.id = idx % n_blue
+                closest_robot.yellow = idx // n_blue == 1  # Verifica se é amarelo ou azul
 
         # Define a zona de domínio do robô como um pouco maior que seu próprio tamanho
         # Isso pode ser ajustado para simular o "controle" da bola
         self.ball_possession = None  
         if not closest_robot: return self.ball_possession
         
-        possession_threshold = closest_robot.rbt_radius * self.possession_radius_scale
+        #possession_threshold = closest_robot.rbt_radius * self.possession_radius_scale
+        possession_threshold = 0.25
         robot_name = f"yellow_{closest_robot.id}" if closest_robot.yellow else f"blue_{closest_robot.id}"
         if min_distance <= possession_threshold:
             self.ball_possession = robot_name
