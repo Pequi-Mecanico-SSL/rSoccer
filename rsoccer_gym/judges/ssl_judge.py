@@ -49,10 +49,10 @@ class Judge():
         goal_top  = self.field.goal_width / 2
         goal_bottom = -self.field.goal_width / 2
 
-        if ball.x > half_len and goal_top <= ball.y <= goal_bottom:
+        if ball.x > half_len and goal_bottom <= ball.y <= goal_top:
             return "RIGHT_GOAL"
 
-        if ball.x < -half_len and goal_top <= ball.y <= goal_bottom:
+        if ball.x < -half_len and goal_bottom <= ball.y <= goal_top:
             return "LEFT_GOAL"
         
         return None
@@ -64,7 +64,7 @@ class Judge():
         """
         ball = self.frame.ball
         half_len = self.field.length / 2
-        half_wid = self.field.width/2
+        half_wid = self.field.width / 2
 
         if ball.x > half_len and abs(ball.y) < half_wid:
             return "RIGHT_BOTTOM_LINE"
@@ -127,7 +127,7 @@ class Judge():
         if not closest_robot: return self.ball_possession
         
         #possession_threshold = closest_robot.rbt_radius * self.possession_radius_scale
-        possession_threshold = 0.25
+        possession_threshold = 0.22 # 0.21 era problematico
         robot_name = f"yellow_{closest_robot.id}" if closest_robot.yellow else f"blue_{closest_robot.id}"
         if min_distance <= possession_threshold:
             self.ball_possession = robot_name

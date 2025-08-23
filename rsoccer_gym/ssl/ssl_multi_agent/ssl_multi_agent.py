@@ -153,7 +153,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
 
             for agent, reward in reward_result.items():
                 reward_agents[agent] += weight * reward
-        
+
         if self.judge_status == "RIGHT_GOAL":
             done = {'__all__': True}
             self.score['blue'] += 1
@@ -170,7 +170,9 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         
         elif self.judge_status in ["RIGHT_BOTTOM_LINE", "LEFT_BOTTOM_LINE", "LOWER_SIDELINE", "UPPER_SIDELINE"]:
             last_touch = self.judge_info["last_touch"]
-            reward_agents.update({last_touch: self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
+            #reward_agents.update({last_touch: self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
+            reward_agents.update({"blue": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
+            reward_agents.update({"yellow": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
 
             initial_pos_frame: Frame = self._get_initial_positions_frame(42)
             self.rsim.reset(initial_pos_frame)
