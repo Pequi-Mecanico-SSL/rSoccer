@@ -1,1 +1,2 @@
 from rsoccer_gym.ssl.ssl_multi_agent.ssl_multi_agent import SSLMultiAgentEnv
+from rsoccer_gym.judges.ssl_judge import Judge

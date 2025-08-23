@@ -12,10 +12,12 @@ import copy
 from gymnasium.wrappers import RecordVideo
 import random
 from rsoccer_gym.Utils.Utils import Geometry2D
+from rsoccer_gym.judges.ssl_judge import Judge
 
 class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
     default_players = 3
     def __init__(self,
+        judge: Judge,
         init_pos,
         field_type=2, 
         fps=40,
@@ -24,6 +26,8 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         render_mode='human',
         dense_rewards = {},
         sparse_rewards = {},
+        possession_radius_scale=3,
+        direction_change_threshold=1
     ):
 
         self.n_robots_blue = min(len(init_pos["blue"]), 3)
@@ -79,6 +83,16 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             **{f'yellow_{i}': np.zeros(self.stack_observation * self.obs_size, dtype=np.float64) for i in range(self.n_robots_yellow)}
         }
 
+        init_frame = self._get_initial_positions_frame(42)
+        self.judge = judge(
+            field=self.field, 
+            initial_frame=init_frame, 
+            possession_radius_scale=possession_radius_scale, 
+            direction_change_threshold=direction_change_threshold
+        )
+        self.judge_last_status, self.judge_last_info = None, None
+        self.judge_status, self.judge_info = self.judge.judge(init_frame)
+
     def _get_commands(self, actions):
         commands = []
         for i in range(self.n_robots_blue):
@@ -118,10 +132,12 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
 
 
     def _calculate_reward_done(self):
+        self.judge_last_status = self.judge_status
+        self.judge_last_info = self.judge_info
+        self.judge_status, self.judge_info = self.judge.judge(self.frame)
 
         done = {'__all__': False}
         truncated = {'__all__': False}
-        ball = self.frame.ball
 
         reward_agents = {
             **{f"blue_{idx}":  0 for idx in range(self.n_robots_blue)},
@@ -138,36 +154,25 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             for agent, reward in reward_result.items():
                 reward_agents[agent] += weight * reward
 
-        half_len = self.field.length/2 
-        half_wid = self.field.width/2
-        half_goal_wid = self.field.goal_width / 2
-
-        
-        if ball.x >= half_len and abs(ball.y) < half_goal_wid:
+        if self.judge_status == "RIGHT_GOAL":
             done = {'__all__': True}
             self.score['blue'] += 1
 
             reward_agents.update({f'blue_{i}': self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_blue)})
             reward_agents.update({f'yellow_{i}': -self.sparse_rewards.get("GOAL_REWARD", 0)for i in range(self.n_robots_yellow)})
         
-        elif ball.x <= -half_len and abs(ball.y) < half_goal_wid:
+        elif self.judge_status == "LEFT_GOAL":
             done = {'__all__': True}
             self.score['yellow'] += 1
 
             reward_agents.update({f'blue_{i}': -self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_blue)})
             reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_yellow)})
         
-        elif ball.x <= -half_len or ball.x >= half_len:
-            reward_agents.update({f'blue_{i}': self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
-            reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
-
-            initial_pos_frame: Frame = self._get_initial_positions_frame(42)
-            self.rsim.reset(initial_pos_frame)
-            self.frame = self.rsim.get_frame()
-        
-        elif (ball.y <= -half_wid or ball.y >= half_wid):
-            reward_agents.update({f'blue_{i}': self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
-            reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
+        elif self.judge_status in ["RIGHT_BOTTOM_LINE", "LEFT_BOTTOM_LINE", "LOWER_SIDELINE", "UPPER_SIDELINE"]:
+            last_touch = self.judge_info["last_touch"]
+            #reward_agents.update({last_touch: self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
+            reward_agents.update({"blue": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
+            reward_agents.update({"yellow": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
 
             initial_pos_frame: Frame = self._get_initial_positions_frame(42)
             self.rsim.reset(initial_pos_frame)
@@ -397,6 +402,50 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         robot_obs = np.concatenate([positions, orientations, dists, angles, last_actions, time_left], dtype=np.float64)
         # robot_obs = np.concatenate([positions, last_actions, time_left], dtype=np.float64)
         return robot_obs
+    
+    def _friendly_observation(self, obs):
+        friendly_obs = {'pos': {}, 'ori': {}, 'dist': {}, 'ang': {}, 'last_act': {}, 'time_left': {}}
+
+        friendly_obs["pos"]["robot"]   = obs[ 0: 2]
+        friendly_obs["pos"][f"ally_0"] = obs[ 2: 4]
+        friendly_obs["pos"][f"ally_1"] = obs[ 4: 6]
+        friendly_obs["pos"][f"adv_0"]  = obs[ 6: 8]
+        friendly_obs["pos"][f"adv_1"]  = obs[ 8:10]
+        friendly_obs["pos"][f"adv_2"]  = obs[10:12]
+        friendly_obs["pos"]["ball"]    = obs[12:14]
+
+        friendly_obs["ori"]["robot"]   = obs[14:17]
+        friendly_obs["ori"][f"ally_0"] = obs[17:20]
+        friendly_obs["ori"][f"ally_1"] = obs[20:23]
+        friendly_obs["ori"][f"adv_0"]  = obs[23:26]
+        friendly_obs["ori"][f"adv_1"]  = obs[26:29]
+        friendly_obs["ori"][f"adv_2"]  = obs[29:32]
+
+        friendly_obs["dist"]["dist_BR"]    = obs[32:33]
+        friendly_obs["dist"]["dist_BG_al"] = obs[33:34]
+        friendly_obs["dist"]["dist_BG_ad"] = obs[34:35]
+        friendly_obs["dist"]["ally_0"]     = obs[35:36]
+        friendly_obs["dist"]["ally_1"]     = obs[36:37]
+        friendly_obs["dist"]["adv_0"]      = obs[37:38]
+        friendly_obs["dist"]["adv_1"]      = obs[38:39]
+        friendly_obs["dist"]["adv_2"]      = obs[39:40]
+
+        friendly_obs["ang"]["ball_robot"]     = obs[40:43]
+        friendly_obs["ang"]["ball_goal_ally"] = obs[43:46]
+        friendly_obs["ang"]["ball_goal_adv"]  = obs[46:49]
+        friendly_obs["ang"]["ally_0"]         = obs[49:52]
+        friendly_obs["ang"]["ally_1"]         = obs[52:55]
+        friendly_obs["ang"]["adv_0"]          = obs[55:58]
+        friendly_obs["ang"]["adv_1"]          = obs[58:61]
+        friendly_obs["ang"]["adv_2"]          = obs[61:64]
+
+        friendly_obs["last_act"]["robot"]   = obs[64:68]
+        friendly_obs["last_act"][f"ally_0"] = obs[68:72]
+        friendly_obs["last_act"][f"ally_1"] = obs[72:76]
+
+        friendly_obs["time_left"] = obs[76:77]
+
+        return friendly_obs
     
     def step(self, action):
         self.steps += 1
