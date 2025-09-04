@@ -93,6 +93,23 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         self.judge_last_status, self.judge_last_info = None, None
         self.judge_status, self.judge_info = self.judge.judge(init_frame)
 
+
+        self.judge_status, self.judge_info = self.judge.judge(init_frame)
+
+        # Cria coeficientes de recompensa individuais para cada robô
+        self.reward_coefficients = {}
+        COEFF_MIN, COEFF_MAX = 0.5, 1.5
+        
+        # Itera em todos os agentes (azuis e amarelos)
+        for agent_id in self._agent_ids:
+            self.reward_coefficients[agent_id] = {}
+            for _, reward_func, _ in self.dense_rewards:
+                func_name = reward_func.__name__
+                self.reward_coefficients[agent_id][func_name] = random.uniform(COEFF_MIN, COEFF_MAX)
+        
+        print("Coeficientes de Recompensa Gerados:")
+        print(self.reward_coefficients)
+
     def _get_commands(self, actions):
         commands = []
         for i in range(self.n_robots_blue):
@@ -152,7 +169,12 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             )
 
             for agent, reward in reward_result.items():
-                reward_agents[agent] += weight * reward
+                func_name = reward_func.__name__
+                
+                coeff = self.reward_coefficients[agent][func_name]
+                
+                reward_agents[agent] += weight * reward * coeff
+                
 
         if self.judge_status == "RIGHT_GOAL":
             done = {'__all__': True}
