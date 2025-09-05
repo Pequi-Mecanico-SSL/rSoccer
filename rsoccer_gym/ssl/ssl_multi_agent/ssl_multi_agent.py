@@ -154,19 +154,25 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             for agent, reward in reward_result.items():
                 reward_agents[agent] += weight * reward
 
-        if self.judge_status == "RIGHT_GOAL":
+        # ----- LÓGICA DE GOL MODIFICADA -----
+        if self.judge_status == "RIGHT_GOAL": # Gol do time Azul (Ataque)
             done = {'__all__': True}
             self.score['blue'] += 1
 
-            reward_agents.update({f'blue_{i}': self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_blue)})
-            reward_agents.update({f'yellow_{i}': -self.sparse_rewards.get("GOAL_REWARD", 0)for i in range(self.n_robots_yellow)})
+            # Time de ataque recebe uma recompensa alta
+            reward_agents.update({f'blue_{i}': self.sparse_rewards.get("ATTACK_GOAL_REWARD", 0) for i in range(self.n_robots_blue)})
+            # Time de defesa recebe uma penalidade alta
+            reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("DEFENSE_GOAL_PENALTY", 0) for i in range(self.n_robots_yellow)})
         
-        elif self.judge_status == "LEFT_GOAL":
+        elif self.judge_status == "LEFT_GOAL": # Gol do time Amarelo (Defesa)
             done = {'__all__': True}
             self.score['yellow'] += 1
 
-            reward_agents.update({f'blue_{i}': -self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_blue)})
-            reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_yellow)})
+            # Time de ataque recebe uma penalidade baixa
+            reward_agents.update({f'blue_{i}': self.sparse_rewards.get("ATTACK_GOAL_PENALTY", 0) for i in range(self.n_robots_blue)})
+            # Time de defesa recebe uma recompensa baixa (não é o foco)
+            reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("DEFENSE_GOAL_REWARD", 0) for i in range(self.n_robots_yellow)})
+        # ------------------------------------
         
         elif self.judge_status in ["RIGHT_BOTTOM_LINE", "LEFT_BOTTOM_LINE", "LOWER_SIDELINE", "UPPER_SIDELINE"]:
             last_touch = self.judge_info["last_touch"]
@@ -474,7 +480,15 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             **{f'yellow_{i}': {} for i in range(self.n_robots_yellow)}
         }  
 
+        # ----- LÓGICA DO BÔNUS DE DEFESA PERFEITA -----
         if done.get("__all__", False) or truncated.get("__all__", False):
+            # Se a partida acabou e o time de defesa (Amarelo) não sofreu gol
+            if self.score['blue'] == 0:
+                bonus = self.sparse_rewards.get("DEFENSE_CLEAN_SHEET_BONUS", 0)
+                for i in range(self.n_robots_yellow):
+                    reward[f'yellow_{i}'] += bonus
+            # -------------------------------------------
+
             for i in range(self.n_robots_blue):
                 infos[f'blue_{i}']["score"] = self.score.copy()    
 
