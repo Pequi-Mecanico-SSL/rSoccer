@@ -4,7 +4,9 @@ import math
 
 class Judge():
     def __init__(self, field: Frame, initial_frame: Field=None, 
-                 possession_radius_scale: float=3, direction_change_threshold: float=1):
+                 possession_radius_scale: float=3, direction_change_threshold: float=1,
+                 left="blue"
+        ):
         self.field = field
         self.last_frame = None
         self.frame = initial_frame
@@ -13,6 +15,7 @@ class Judge():
         self.last_touch: str = None
         self.possession_radius_scale = possession_radius_scale
         self.direction_change_threshold = direction_change_threshold #in degrees
+        self.left = left
 
     def judge(self, frame: Frame) -> tuple[str, dict]:
         """
@@ -27,9 +30,11 @@ class Judge():
 
         self._update_ball_possession()
         self._update_last_touch()
+        self._update_offenses()
         infos = {
             "ball_possession": self.ball_possession,
-            "last_touch": self.last_touch
+            "last_touch": self.last_touch,
+            "offenses": self.offenses
         }
 
         goal = self._check_goal()
@@ -88,6 +93,77 @@ class Judge():
         if ball.y < -half_wid:
             return "LOWER_SIDELINE"
         return None
+    
+    def _check_opponent_defense_area(self, robot, side, color) -> str|None:
+        # Medidas já escaladas
+        robot_name = f"{color}_{robot.id}"
+        half_len = self.field.length/2 
+        penalty_x = half_len - self.field.penalty_length
+        penalty_y = self.field.penalty_width/2
+
+        x_inf, x_sup = penalty_x, half_len
+        if side == "right":
+            x_inf, x_sup = -half_len, -penalty_x
+
+
+        if (
+            x_inf < robot.x < x_sup and 
+            abs(robot.y) <= penalty_y and
+            self.ball_possession == robot_name
+        ):
+            return "OPPONENT_DEFENSE_AREA"
+        return None
+    
+    def _check_team_defense_area(self, robot, side, color) -> str|None:
+        # Medidas já escaladas
+        half_len = self.field.length/2 
+        penalty_x = half_len - self.field.penalty_length
+        penalty_y = self.field.penalty_width/2
+
+        x_inf, x_sup = -half_len, -penalty_x
+        if side == "right":
+            x_inf, x_sup = penalty_x, half_len
+
+        inside_area = (
+            x_inf < robot.x < x_sup and 
+            abs(robot.y) <= penalty_y
+        )
+
+        n_robots_in_area = getattr(self, f"n_{side}_robots_in_defense")
+        if inside_area:
+            n_robots_in_area += 1
+            setattr(self, f"n_{side}_robots_in_defense", n_robots_in_area)
+
+        if inside_area and n_robots_in_area > 1:
+            return "TEAM_DEFENSE_AREA"
+        return None
+    
+    
+    def _update_offenses(self) -> None:
+        self.offenses = {}
+        robots_left, robots_right = self.frame.robots_blue, self.frame.robots_yellow
+        robot_left_color, robot_right_color = "blue", "yellow"
+        if self.left == "yellow":
+            robots_left, robots_right = robots_right, robots_left
+            robot_left_color, robot_right_color = "yellow", "blue"
+
+        self.n_left_robots_in_defense = 0
+        self.n_right_robots_in_defense = 0
+        for idx, robot_left in robots_left.items():
+            self.offenses[f"{robot_left_color}_{idx}"] = []
+            for func in [self._check_opponent_defense_area, self._check_team_defense_area]:
+                result = func(robot_left, side="left", color=robot_left_color)
+                if result:
+                    self.offenses[f"{robot_left_color}_{idx}"].append(result)
+        
+        for idx, robot_right in robots_right.items():
+            self.offenses[f"{robot_right_color}_{idx}"] = []
+            for func in [self._check_opponent_defense_area, self._check_team_defense_area]:
+                result = func(robot_right, side="right", color=robot_right_color)
+                if result:
+                    self.offenses[f"{robot_right_color}_{idx}"].append(result)
+            
+            
       
     def _update_ball_possession(self) -> str|None:
         """

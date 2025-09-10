@@ -171,12 +171,20 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         elif self.judge_status in ["RIGHT_BOTTOM_LINE", "LEFT_BOTTOM_LINE", "LOWER_SIDELINE", "UPPER_SIDELINE"]:
             last_touch = self.judge_info["last_touch"]
             #reward_agents.update({last_touch: self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
-            reward_agents.update({"blue": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
-            reward_agents.update({"yellow": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
+            reward_agents.update({f"blue_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
+            reward_agents.update({f"yellow_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
 
             initial_pos_frame: Frame = self._get_initial_positions_frame(42)
             self.rsim.reset(initial_pos_frame)
             self.frame = self.rsim.get_frame()
+
+        
+        for robot_name, offenses in self.judge_info["offenses"].items():
+            if len(offenses) == 0: continue
+            reward_agents[robot_name] = 0
+            for offense in offenses:
+                reward_agents[robot_name] += self.sparse_rewards.get(offense, 0)
+
         
         return reward_agents, done, truncated
 
