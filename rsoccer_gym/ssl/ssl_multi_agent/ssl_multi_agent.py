@@ -13,6 +13,7 @@ from gymnasium.wrappers import RecordVideo
 import random
 from rsoccer_gym.Utils.Utils import Geometry2D
 from rsoccer_gym.judges.ssl_judge import Judge
+import math
 
 class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
     default_players = 3
@@ -30,6 +31,9 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         direction_change_threshold=1
     ):
 
+        self.class_judge = judge
+        self.possession_radius_scale = possession_radius_scale
+        self.direction_change_threshold = direction_change_threshold
         self.n_robots_blue = min(len(init_pos["blue"]), 3)
         self.n_robots_yellow = min(len(init_pos["yellow"]), 3)
         self.score = {'blue': 0, 'yellow': 0}
@@ -83,15 +87,15 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             **{f'yellow_{i}': np.zeros(self.stack_observation * self.obs_size, dtype=np.float64) for i in range(self.n_robots_yellow)}
         }
 
-        init_frame = self._get_initial_positions_frame(42)
-        self.judge = judge(
+        self.judge_last_status, self.judge_last_info = dict(), dict()
+        self.judge_status, self.judge_info = dict(), dict()
+        init_frame = self._get_initial_positions_frame("kickoff")
+        self.judge = self.class_judge(
             field=self.field, 
             initial_frame=init_frame, 
             possession_radius_scale=possession_radius_scale, 
             direction_change_threshold=direction_change_threshold
         )
-        self.judge_last_status, self.judge_last_info = None, None
-        self.judge_status, self.judge_info = self.judge.judge(init_frame)
 
     def _get_commands(self, actions):
         commands = []
@@ -99,7 +103,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             robot_actions = actions[f'blue_{i}'].copy()
             angle = self.frame.robots_blue[i].theta
             v_x, v_y, v_theta = self.convert_actions(robot_actions, np.deg2rad(angle))
-            cmd = Robot(yellow=False, id=i, v_x=v_x, v_y=v_y, v_theta=v_theta, kick_v_x=self.kick_speed_x if robot_actions[3] > 0 else 0.)
+            cmd = Robot(yellow=False, id=i, v_x=v_x, v_y=v_y, v_theta=v_theta, kick_v_x=self.kick_speed_x * max(robot_actions[3], 0))
             commands.append(cmd)
         
         for i in range(self.n_robots_yellow):
@@ -107,7 +111,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             angle = self.frame.robots_yellow[i].theta
             v_x, v_y, v_theta = self.convert_actions(robot_actions, np.deg2rad(angle))
 
-            cmd = Robot(yellow=True, id=i, v_x=v_x, v_y=v_y, v_theta=v_theta, kick_v_x=self.kick_speed_x if robot_actions[3] > 0 else 0.)
+            cmd = Robot(yellow=True, id=i, v_x=v_x, v_y=v_y, v_theta=v_theta, kick_v_x=self.kick_speed_x * max(robot_actions[3], 0))
             commands.append(cmd)
 
         return commands
@@ -154,6 +158,15 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             for agent, reward in reward_result.items():
                 reward_agents[agent] += weight * reward
 
+        ball = self.frame.ball
+        last_touch = self.judge_info["last_touch"]
+        map_freekick = {
+            "RIGHT_BOTTOM_LINE_blue": [self.field.length/2 - 1, (self.field.width/2 - 0.2) * (1 if ball.y > 0 else -1)],
+            "RIGHT_BOTTOM_LINE_yellow": [self.field.length/2 - 0.2, (self.field.width/2 - 0.2) * (1 if ball.y > 0 else -1)],
+            "LEFT_BOTTOM_LINE_blue": [-self.field.length/2 + 0.2, (self.field.width/2 - 0.2) * (1 if ball.y > 0 else -1)],
+            "LEFT_BOTTOM_LINE_yellow": [-self.field.length/2 + 1, (self.field.width/2 - 0.2) * (1 if ball.y > 0 else -1)]
+        }
+
         if self.judge_status == "RIGHT_GOAL":
             done = {'__all__': True}
             self.score['blue'] += 1
@@ -167,25 +180,58 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
 
             reward_agents.update({f'blue_{i}': -self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_blue)})
             reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("GOAL_REWARD", 0) for i in range(self.n_robots_yellow)})
-        
-        elif self.judge_status in ["RIGHT_BOTTOM_LINE", "LEFT_BOTTOM_LINE", "LOWER_SIDELINE", "UPPER_SIDELINE"]:
-            last_touch = self.judge_info["last_touch"]
+
+
+        elif self.judge_status in ["LOWER_SIDELINE", "UPPER_SIDELINE"]:
             #reward_agents.update({last_touch: self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
             reward_agents.update({f"blue_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
             reward_agents.update({f"yellow_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
-
-            initial_pos_frame: Frame = self._get_initial_positions_frame(42)
+                
+            limit = self.field.length/2 - 0.2
+            dx = max(abs(ball.x) - limit, 0) * (-1 if ball.x > 0 else 1)
+            dy = -0.2  if ball.y > 0 else 0.2
+            initial_pos_frame: Frame = self._get_initial_positions_frame(
+                "freekick", 
+                ball_pos=[ball.x + dx, ball.y + dy], 
+                team_freekick= "yellow" if "blue" in last_touch else "blue"
+            )
+            self.rsim.reset(initial_pos_frame)
+            self.frame = self.rsim.get_frame()
+        
+        elif self.judge_status in ["RIGHT_BOTTOM_LINE", "LEFT_BOTTOM_LINE"]:
+            #reward_agents.update({last_touch: self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
+            reward_agents.update({f"blue_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
+            reward_agents.update({f"yellow_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
+        
+            initial_pos_frame: Frame = self._get_initial_positions_frame(
+                "freekick", 
+                ball_pos=map_freekick[self.judge_status + "_" + last_touch.split("_")[0]],
+                team_freekick="yellow" if "blue" in last_touch else "blue"
+            )
             self.rsim.reset(initial_pos_frame)
             self.frame = self.rsim.get_frame()
 
         
+        double_touch = False
         for robot_name, offenses in self.judge_info["offenses"].items():
             if len(offenses) == 0: continue
             reward_agents[robot_name] = 0
             for offense in offenses:
+                if offense == "DOUBLE_TOUCH":
+                    double_touch = True
+                elif offense in ["OPPONENT_DEFENSE_AREA", "TEAM_DEFENSE_AREA"]:
+                    done = {'__all__': True}
                 reward_agents[robot_name] += self.sparse_rewards.get(offense, 0)
 
-        
+        if double_touch:
+            initial_pos_frame: Frame = self._get_initial_positions_frame(
+                "freekick", 
+                ball_pos=[ball.x, ball.y],
+                team_freekick="yellow" if "blue" in last_touch else "blue",
+                use_init_pos=True
+            )
+            self.rsim.reset(initial_pos_frame)
+            self.frame = self.rsim.get_frame()
         return reward_agents, done, truncated
 
     def reset(self, seed=42, options={}):
@@ -197,8 +243,16 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         # del(self.view)
         # self.view = None
 
-        initial_pos_frame: Frame = self._get_initial_positions_frame(seed)
-        self.rsim.reset(initial_pos_frame)
+        self.judge_last_status, self.judge_last_info = dict(), dict()
+        self.judge_status, self.judge_info = dict(), dict()
+        init_frame = self._get_initial_positions_frame("kickoff")
+        self.judge = self.class_judge(
+            field=self.field, 
+            initial_frame=init_frame, 
+            possession_radius_scale=self.possession_radius_scale, 
+            direction_change_threshold=self.direction_change_threshold
+        )
+        self.rsim.reset(init_frame)
 
         # Get frame from simulator
         self.frame = self.rsim.get_frame()
@@ -211,47 +265,103 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
 
         return self.observations.copy(), {**blue, **yellow}
   
-    def _get_initial_positions_frame(self, seed):
+    def _get_initial_positions_frame(self, stage, ball_pos=None, team_freekick=None, use_init_pos=False):
         '''Returns the position of each robot and ball for the initial frame'''
         #np.random.seed(seed)
 
         field_half_length = self.field.length / 2
         field_half_width = self.field.width / 2
 
-        def x(): return random.uniform(-field_half_length + 0.1,
-                                       field_half_length - 0.1)
-
-        def y(): return random.uniform(-field_half_width + 0.1,
-                                       field_half_width - 0.1)
-
-        def theta(): return random.uniform(0, 360)
+        def random(lim1, lim2): return np.random.uniform(lim1, lim2)
 
         places = KDTree()
 
         pos_frame: Frame = Frame()
 
-        if isinstance(self.init_pos["ball"], list): 
-            pos_frame.ball = Ball(x=self.init_pos["ball"][0], y=self.init_pos["ball"][1])
-        else:
-            pos_frame.ball = Ball(x=random.uniform(-2, 2), y=random.uniform(-1.2, 1.2))
-        places.insert((pos_frame.ball.x, pos_frame.ball.y))
+        if stage == "kickoff":
+            if isinstance(self.init_pos["ball"], list): 
+                pos_frame.ball = Ball(x=self.init_pos["ball"][0], y=self.init_pos["ball"][1])
+            else:
+                pos_frame.ball = Ball(x=random.uniform(-2, 2), y=random.uniform(-1.2, 1.2))
+            places.insert((pos_frame.ball.x, pos_frame.ball.y))
 
-        min_dist = 0.2
-        for i in range(self.n_robots_blue):
-            pos = self.init_pos['blue'][i+1] 
-            while places.get_nearest(pos[:2])[1] < min_dist:
-                pos = (x(), y(), theta()) 
-            places.insert(pos)
-            pos_frame.robots_blue[i] = Robot(x=pos[0], y=pos[1], theta=pos[2])
+            min_dist = 0.2
+            for i in range(self.n_robots_blue + self.n_robots_yellow):
+                is_blue = i < self.n_robots_blue
+                idx = i if is_blue else i - self.n_robots_blue
+                color = "blue" if is_blue else "yellow"
+                pos = self.init_pos[color][idx+1] 
+                while places.get_nearest(pos[:2])[1] < min_dist:
+                    pos = (
+                        random(-field_half_length + 0.1, field_half_length - 0.1), 
+                        random(-field_half_width + 0.1, field_half_width - 0.1), 
+                        random(0, 360)
+                    ) 
+                places.insert(pos)
+
+                pos_frame.robots_blue[i] = Robot(x=pos[0], y=pos[1], theta=pos[2])
+                robot_list = getattr(pos_frame, f"robots_{color}")
+                robot_list[idx] = Robot(x=pos[0], y=pos[1], theta=pos[2])
+
+            
+            last_touch = self.judge_info.get("last_touch", "")
+            last_touch = "" if last_touch is None else last_touch
+            team_last_touch =  last_touch.split("_")[0]
+            kickoff_team = np.random.choice(["blue", "yellow"])
+            if team_last_touch == "yellow":
+                kickoff_team = "blue"
+            elif team_last_touch == "blue":
+                kickoff_team = "yellow"
+
+            robots_list = getattr(pos_frame, f"robots_{kickoff_team}")
+            robots_list[0] = Robot(
+                x= 0.2 * -(robots_list[0].x / abs(robots_list[0].x)), 
+                y= 0.0, 
+                theta= robots_list[0].theta + 180.0
+            )
 
 
-        for i in range(self.n_robots_yellow):
-            pos = self.init_pos['yellow'][i+1] 
-            while places.get_nearest(pos[:2])[1] < min_dist:
-                pos = (x(), y(), theta()) 
+        elif stage == "freekick":
+            if ball_pos is None: raise ValueError("ball_pos must be provided for freekick")
+            if team_freekick not in ["blue", "yellow"]: raise ValueError("team_freekick must be 'blue' or 'yellow'")
+            pos_frame.ball = Ball(x=ball_pos[0], y=ball_pos[1])
+            places.insert((pos_frame.ball.x, pos_frame.ball.y))
 
-            places.insert(pos)
-            pos_frame.robots_yellow[i] = Robot(x=pos[0], y=pos[1], theta=pos[2])
+            min_dist_robots = 0.2
+            min_dist_ball = 0.5
+            for i in range(self.n_robots_blue + self.n_robots_yellow):
+                is_blue = i < self.n_robots_blue
+                idx = i if is_blue else i - self.n_robots_blue
+                color = "blue" if is_blue else "yellow"
+                x_lim = [-field_half_length + 0.1, 0] if is_blue else [0, field_half_length - 0.1]
+                pos = (
+                    random(x_lim[0], x_lim[1]) if not use_init_pos else self.init_pos[color][idx+1][0],
+                    random(-field_half_width + 0.1, field_half_width - 0.1) if not use_init_pos else self.init_pos[color][idx+1][1],
+                    random(0, 360) if not use_init_pos else self.init_pos[color][idx+1][2]
+                ) 
+                while (math.hypot(pos[0] - pos_frame.ball.x, pos[1] - pos_frame.ball.y) < min_dist_ball 
+                       or places.get_nearest(pos[:2])[1] < min_dist_robots):
+                    pos = (
+                        random(x_lim[0], x_lim[1]),
+                        random(-field_half_width + 0.1, field_half_width - 0.1),
+                        random(0, 360)
+                    ) 
+                places.insert(pos)
+
+                color = "blue" if is_blue else "yellow"
+                robot_list = getattr(pos_frame, f"robots_{color}")
+                robot_list[idx] = Robot(x=pos[0], y=pos[1], theta=pos[2])
+
+            robots_list = getattr(pos_frame, f"robots_{team_freekick}")
+            r = 0.2
+            f = lambda x:  math.sqrt(r**2 - x**2)
+            dx = random(0, r) if team_freekick == "yellow" else random(-r, 0)
+            dy = f(dx) if ball_pos[1] > 0 else -f(dx)
+            robots_list[0] = Robot(
+                x= ball_pos[0] + dx, 
+                y= ball_pos[1] + dy, 
+                theta= random(0, 360)
+            )
 
         return pos_frame
 

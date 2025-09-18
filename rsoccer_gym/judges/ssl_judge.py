@@ -5,17 +5,22 @@ import math
 class Judge():
     def __init__(self, field: Frame, initial_frame: Field=None, 
                  possession_radius_scale: float=3, direction_change_threshold: float=1,
-                 left="blue"
+                 left="blue", kickoff=True, initial_ball_position=[0,0]
         ):
         self.field = field
         self.last_frame = None
         self.frame = initial_frame
 
         self.ball_possession: str = None
+
         self.last_touch: str = None
         self.possession_radius_scale = possession_radius_scale
         self.direction_change_threshold = direction_change_threshold #in degrees
         self.left = left
+
+        self.initial_ball_position = initial_ball_position
+        self.historical_ball_positions = set()
+        self.is_kickoff = kickoff
 
     def judge(self, frame: Frame) -> tuple[str, dict]:
         """
@@ -101,33 +106,28 @@ class Judge():
         penalty_x = half_len - self.field.penalty_length
         penalty_y = self.field.penalty_width/2
 
-        x_inf, x_sup = penalty_x, half_len
         if side == "right":
-            x_inf, x_sup = -half_len, -penalty_x
-
+            in_last_third = robot.x < -penalty_x
+        else:
+            in_last_third = robot.x > penalty_x
 
         if (
-            x_inf < robot.x < x_sup and 
+            in_last_third and 
             abs(robot.y) <= penalty_y and
             self.ball_possession == robot_name
         ):
             return "OPPONENT_DEFENSE_AREA"
         return None
     
-    def _check_team_defense_area(self, robot, side, color) -> str|None:
+    def _check_ally_defense_area(self, robot, side, color) -> str|None:
         # Medidas já escaladas
         half_len = self.field.length/2 
         penalty_x = half_len - self.field.penalty_length
         penalty_y = self.field.penalty_width/2
-
-        x_inf, x_sup = -half_len, -penalty_x
         if side == "right":
-            x_inf, x_sup = penalty_x, half_len
-
-        inside_area = (
-            x_inf < robot.x < x_sup and 
-            abs(robot.y) <= penalty_y
-        )
+            inside_area = robot.x > penalty_x and abs(robot.y) <= penalty_y
+        else:
+            inside_area = robot.x < -penalty_x and abs(robot.y) <= penalty_y
 
         n_robots_in_area = getattr(self, f"n_{side}_robots_in_defense")
         if inside_area:
@@ -138,7 +138,43 @@ class Judge():
             return "TEAM_DEFENSE_AREA"
         return None
     
+    def _check_collision(self, robot, side, color) -> str|None:
+        # Medidas já escaladas
+        all_robots = {
+            **self.frame.robots_blue, 
+            **self.frame.robots_yellow
+        }
+
+        for other_idx, other_robot in all_robots.items():
+            dist = ((robot.x - other_robot.x)**2 + (robot.y - other_robot.y)**2)**(1/2)
+            if 0 < dist < 0.25:
+                return "COLLISION"
+        return None
     
+    def _check_double_touch(self):
+        if self.is_kickoff == False: return None
+
+        dist = math.hypot(
+            self.frame.ball.x - self.initial_ball_position[0], 
+            self.frame.ball.x - self.initial_ball_position[0]
+        )
+
+        if (
+            self.ball_possession is not None and
+            dist > 0.1 and 
+            len(self.historical_ball_positions) == 1 and
+            self.ball_possession in self.historical_ball_positions
+        ):
+            self.is_kickoff = False
+            return "DOUBLE_TOUCH"
+        
+        elif len(self.historical_ball_positions) == 2:
+            self.is_kickoff = False
+            return None
+
+        return None
+
+
     def _update_offenses(self) -> None:
         self.offenses = {}
         robots_left, robots_right = self.frame.robots_blue, self.frame.robots_yellow
@@ -151,20 +187,22 @@ class Judge():
         self.n_right_robots_in_defense = 0
         for idx, robot_left in robots_left.items():
             self.offenses[f"{robot_left_color}_{idx}"] = []
-            for func in [self._check_opponent_defense_area, self._check_team_defense_area]:
+            for func in [self._check_opponent_defense_area, self._check_ally_defense_area, self._check_collision]:
                 result = func(robot_left, side="left", color=robot_left_color)
                 if result:
                     self.offenses[f"{robot_left_color}_{idx}"].append(result)
         
         for idx, robot_right in robots_right.items():
             self.offenses[f"{robot_right_color}_{idx}"] = []
-            for func in [self._check_opponent_defense_area, self._check_team_defense_area]:
+            for func in [self._check_opponent_defense_area, self._check_ally_defense_area,  self._check_collision]:
                 result = func(robot_right, side="right", color=robot_right_color)
                 if result:
                     self.offenses[f"{robot_right_color}_{idx}"].append(result)
-            
-            
-      
+        
+        result = self._check_double_touch()
+        if result:
+            self.offenses[self.ball_possession].append(result)
+                  
     def _update_ball_possession(self) -> str|None:
         """
         Determina qual robô tem a posse da bola ou se a bola está livre.
@@ -207,6 +245,7 @@ class Judge():
         robot_name = f"yellow_{closest_robot.id}" if closest_robot.yellow else f"blue_{closest_robot.id}"
         if min_distance <= possession_threshold:
             self.ball_possession = robot_name
+            self.historical_ball_positions.add(self.ball_possession)
         
         return self.ball_possession
               
