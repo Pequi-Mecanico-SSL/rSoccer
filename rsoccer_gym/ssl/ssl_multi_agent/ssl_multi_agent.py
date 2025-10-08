@@ -1,3 +1,5 @@
+# SSLMultiAgentEnv.py
+
 import numpy as np
 from gymnasium.spaces import Box, Dict
 from rsoccer_gym.Entities import Ball, Frame, Robot
@@ -24,7 +26,8 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         match_time=40,
         stack_observation=8,
         render_mode='human',
-        dense_rewards = {},
+        attacker_dense_rewards = {}, # MODIFICADO
+        defender_dense_rewards = {}, # MODIFICADO
         sparse_rewards = {},
         possession_radius_scale=3,
         direction_change_threshold=1
@@ -41,8 +44,11 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             time_step=1/fps,
             render_mode=render_mode
         )
-        self.dense_rewards = dense_rewards
+        # MODIFICADO
+        self.attacker_dense_rewards = attacker_dense_rewards
+        self.defender_dense_rewards = defender_dense_rewards
         self.sparse_rewards = sparse_rewards
+
         self.geometry = Geometry2D(-self.field.length/2, self.field.length/2, -self.field.width/2, self.field.width/2)
         self.goal_template = namedtuple('goal', ['x', 'y'])
         self.ball_template = namedtuple('ball', ['x', 'y', 'v_x', 'v_y'])
@@ -93,6 +99,9 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         self.judge_last_status, self.judge_last_info = None, None
         self.judge_status, self.judge_info = self.judge.judge(init_frame)
 
+
+        self.judge_status, self.judge_info = self.judge.judge(init_frame)
+        
     def _get_commands(self, actions):
         commands = []
         for i in range(self.n_robots_blue):
@@ -130,7 +139,9 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         
         return v_x, v_y, v_theta
 
-
+    # =================================================================================
+    # >>>>> FUNÇÃO PRINCIPALMENTE MODIFICADA <<<<<
+    # =================================================================================
     def _calculate_reward_done(self):
         self.judge_last_status = self.judge_status
         self.judge_last_info = self.judge_info
@@ -143,42 +154,59 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             **{f"blue_{idx}":  0 for idx in range(self.n_robots_blue)},
             **{f"yellow_{idx}": 0 for idx in range(self.n_robots_yellow)},
         }
-        for weight, reward_func, list_attr in self.dense_rewards:
+        
+        # --- CALCULA RECOMPENSAS DENSAS PARA ATACANTES (AZUL) ---
+        for weight, reward_func, list_attr in self.attacker_dense_rewards:
             kwargs = {attr: getattr(self, attr) for attr in list_attr}
+            kwargs.update({"judge_info": self.judge_info, "judge_last_info": self.judge_last_info})
             reward_result = reward_func(
                 self.field, self.frame, self.last_frame, 
                 left="blue", right="yellow", 
                 **kwargs
             )
+            for agent_id in self._agent_ids:
+                if "blue" in agent_id and agent_id in reward_result:
+                    reward_agents[agent_id] += weight * reward_result[agent_id]
 
-            for agent, reward in reward_result.items():
-                reward_agents[agent] += weight * reward
+        # --- CALCULA RECOMPENSAS DENSAS PARA DEFENSORES (AMARELO) ---
+        for weight, reward_func, list_attr in self.defender_dense_rewards:
+            kwargs = {attr: getattr(self, attr) for attr in list_attr}
+            kwargs.update({"judge_info": self.judge_info, "judge_last_info": self.judge_last_info})
+            reward_result = reward_func(
+                self.field, self.frame, self.last_frame, 
+                left="blue", right="yellow", 
+                **kwargs
+            )
+            for agent_id in self._agent_ids:
+                if "yellow" in agent_id and agent_id in reward_result:
+                    reward_agents[agent_id] += weight * reward_result[agent_id]
 
-        # ----- LÓGICA DE GOL MODIFICADA -----
-        if self.judge_status == "RIGHT_GOAL": # Gol do time Azul (Ataque)
+
+        # --- CALCULA RECOMPENSAS ESPARSAS (GOLS) ---
+        if self.judge_status == "RIGHT_GOAL": # Gol do time de ataque (Azul)
             done = {'__all__': True}
             self.score['blue'] += 1
-
-            # Time de ataque recebe uma recompensa alta
-            reward_agents.update({f'blue_{i}': self.sparse_rewards.get("ATTACK_GOAL_REWARD", 0) for i in range(self.n_robots_blue)})
-            # Time de defesa recebe uma penalidade alta
-            reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("DEFENSE_GOAL_PENALTY", 0) for i in range(self.n_robots_yellow)})
+            # Recompensa para atacantes
+            for i in range(self.n_robots_blue):
+                reward_agents[f'blue_{i}'] += self.sparse_rewards.get("ATTACK_GOAL_REWARD", 0)
+            # Penalidade para defensores
+            for i in range(self.n_robots_yellow):
+                reward_agents[f'yellow_{i}'] += self.sparse_rewards.get("DEFENSE_GOAL_PENALTY", 0)
         
-        elif self.judge_status == "LEFT_GOAL": # Gol do time Amarelo (Defesa)
+        elif self.judge_status == "LEFT_GOAL": # Gol do time de defesa (Amarelo)
             done = {'__all__': True}
             self.score['yellow'] += 1
-
-            # Time de ataque recebe uma penalidade baixa
-            reward_agents.update({f'blue_{i}': self.sparse_rewards.get("ATTACK_GOAL_PENALTY", 0) for i in range(self.n_robots_blue)})
-            # Time de defesa recebe uma recompensa baixa (não é o foco)
-            reward_agents.update({f'yellow_{i}': self.sparse_rewards.get("DEFENSE_GOAL_REWARD", 0) for i in range(self.n_robots_yellow)})
-        # ------------------------------------
+            # Penalidade para atacantes
+            for i in range(self.n_robots_blue):
+                reward_agents[f'blue_{i}'] += self.sparse_rewards.get("ATTACK_GOAL_PENALTY", 0)
+            # Recompensa para defensores
+            for i in range(self.n_robots_yellow):
+                reward_agents[f'yellow_{i}'] += self.sparse_rewards.get("DEFENSE_GOAL_REWARD", 0)
         
         elif self.judge_status in ["RIGHT_BOTTOM_LINE", "LEFT_BOTTOM_LINE", "LOWER_SIDELINE", "UPPER_SIDELINE"]:
-            last_touch = self.judge_info["last_touch"]
-            #reward_agents.update({last_touch: self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
-            reward_agents.update({"blue": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
-            reward_agents.update({"yellow": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
+            outside_penalty = self.sparse_rewards.get("OUTSIDE_REWARD", 0)
+            for agent_id in self._agent_ids:
+                reward_agents[agent_id] += outside_penalty
 
             initial_pos_frame: Frame = self._get_initial_positions_frame(42)
             self.rsim.reset(initial_pos_frame)
@@ -480,15 +508,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             **{f'yellow_{i}': {} for i in range(self.n_robots_yellow)}
         }  
 
-        # ----- LÓGICA DO BÔNUS DE DEFESA PERFEITA -----
         if done.get("__all__", False) or truncated.get("__all__", False):
-            # Se a partida acabou e o time de defesa (Amarelo) não sofreu gol
-            if self.score['blue'] == 0:
-                bonus = self.sparse_rewards.get("DEFENSE_CLEAN_SHEET_BONUS", 0)
-                for i in range(self.n_robots_yellow):
-                    reward[f'yellow_{i}'] += bonus
-            # -------------------------------------------
-
             for i in range(self.n_robots_blue):
                 infos[f'blue_{i}']["score"] = self.score.copy()    
 
