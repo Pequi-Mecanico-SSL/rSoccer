@@ -29,6 +29,8 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         sparse_rewards = {},
         possession_radius_scale=3,
         direction_change_threshold=1,
+        attacker_robot_id=0,
+        defender_robot_id=0
     ):
 
         self.class_judge = judge
@@ -87,7 +89,8 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             **{f'yellow_{i}': np.zeros(self.stack_observation * self.obs_size, dtype=np.float64) for i in range(self.n_robots_yellow)}
         }
 
-
+        self.attacker_robot_id = attacker_robot_id
+        self.defender_robot_id = defender_robot_id
         self.judge_last_status, self.judge_last_info = dict(), dict()
         self.judge_status, self.judge_info = dict(), dict()
         init_frame = self._get_initial_positions_frame("kickoff")
@@ -101,18 +104,20 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
     def _get_commands(self, actions):
         commands = []
         for i in range(self.n_robots_blue):
+            attacker = self.attacker_robot_id == i
             robot_actions = actions[f'blue_{i}'].copy()
             angle = self.frame.robots_blue[i].theta
             v_x, v_y, v_theta = self.convert_actions(robot_actions, np.deg2rad(angle))
-            cmd = Robot(yellow=False, id=i, v_x=v_x, v_y=v_y, v_theta=v_theta, kick_v_x=self.kick_speed_x * max(robot_actions[3], 0))
+            cmd = Robot(yellow=False, id=i, v_x=attacker*v_x, v_y= attacker * v_y, v_theta=attacker * v_theta, kick_v_x= attacker * self.kick_speed_x * max(robot_actions[3], 0))
             commands.append(cmd)
         
         for i in range(self.n_robots_yellow):
+            defender = self.defender_robot_id == i
             robot_actions = actions[f'yellow_{i}'].copy()
             angle = self.frame.robots_yellow[i].theta
             v_x, v_y, v_theta = self.convert_actions(robot_actions, np.deg2rad(angle))
 
-            cmd = Robot(yellow=True, id=i, v_x=v_x, v_y=v_y, v_theta=v_theta, kick_v_x=self.kick_speed_x * max(robot_actions[3], 0))
+            cmd = Robot(yellow=True, id=i, v_x=defender*v_x, v_y= defender * v_y, v_theta=defender * v_theta, kick_v_x= defender * self.kick_speed_x * max(robot_actions[3], 0))
             commands.append(cmd)
 
         return commands
@@ -188,14 +193,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             reward_agents.update({f"blue_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
             reward_agents.update({f"yellow_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
                 
-            limit = self.field.length/2 - 0.2
-            dx = max(abs(ball.x) - limit, 0) * (-1 if ball.x > 0 else 1)
-            dy = -0.2  if ball.y > 0 else 0.2
-            initial_pos_frame: Frame = self._get_initial_positions_frame(
-                "freekick", 
-                ball_pos=[ball.x + dx, ball.y + dy], 
-                team_freekick= "yellow" if "blue" in last_touch else "blue"
-            )
+            initial_pos_frame: Frame = self._get_initial_positions_frame("kickoff")
             self.rsim.reset(initial_pos_frame)
             self.frame = self.rsim.get_frame()
         
@@ -204,35 +202,19 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             reward_agents.update({f"blue_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
             reward_agents.update({f"yellow_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
         
-            initial_pos_frame: Frame = self._get_initial_positions_frame(
-                "freekick", 
-                ball_pos=map_freekick[self.judge_status + "_" + last_touch.split("_")[0]],
-                team_freekick="yellow" if "blue" in last_touch else "blue"
-            )
+            initial_pos_frame: Frame = self._get_initial_positions_frame("kickoff")
             self.rsim.reset(initial_pos_frame)
             self.frame = self.rsim.get_frame()
 
         
-        double_touch = False
         for robot_name, offenses in self.judge_info["offenses"].items():
             if len(offenses) == 0: continue
             reward_agents[robot_name] = 0
             for offense in offenses:
-                if offense == "DOUBLE_TOUCH":
-                    double_touch = True
-                elif offense in ["OPPONENT_DEFENSE_AREA", "TEAM_DEFENSE_AREA"]:
+                if offense in ["OPPONENT_DEFENSE_AREA", "TEAM_DEFENSE_AREA"]:
                     done = {'__all__': True}
                 reward_agents[robot_name] += self.sparse_rewards.get(offense, 0)
 
-        if double_touch:
-            initial_pos_frame: Frame = self._get_initial_positions_frame(
-                "freekick", 
-                ball_pos=[ball.x, ball.y],
-                team_freekick="yellow" if "blue" in last_touch else "blue",
-                use_init_pos=True
-            )
-            self.rsim.reset(initial_pos_frame)
-            self.frame = self.rsim.get_frame()
         return reward_agents, done, truncated
 
     def reset(self, seed=42, options={}):
@@ -303,23 +285,6 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
                 pos_frame.robots_blue[i] = Robot(x=pos[0], y=pos[1], theta=pos[2])
                 robot_list = getattr(pos_frame, f"robots_{color}")
                 robot_list[idx] = Robot(x=pos[0], y=pos[1], theta=pos[2])
-
-            
-            last_touch = self.judge_info.get("last_touch", "")
-            last_touch = "" if last_touch is None else last_touch
-            team_last_touch =  last_touch.split("_")[0]
-            kickoff_team = np.random.choice(["blue", "yellow"])
-            if team_last_touch == "yellow":
-                kickoff_team = "blue"
-            elif team_last_touch == "blue":
-                kickoff_team = "yellow"
-
-            robots_list = getattr(pos_frame, f"robots_{kickoff_team}")
-            robots_list[0] = Robot(
-                x= 0.2 * -(robots_list[0].x / abs(robots_list[0].x)), 
-                y= 0.0, 
-                theta= robots_list[0].theta + 180.0
-            )
 
 
         elif stage == "freekick":
