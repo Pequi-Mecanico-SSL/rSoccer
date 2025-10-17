@@ -30,8 +30,8 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         direction_change_threshold=1
     ):
 
-        self.n_robots_blue = min(len(init_pos["blue"]), 3)
-        self.n_robots_yellow = min(len(init_pos["yellow"]), 3)
+        self.n_robots_blue = min(len(init_pos["blue"]), 1)
+        self.n_robots_yellow = min(len(init_pos["yellow"]), 1)
         self.score = {'blue': 0, 'yellow': 0}
         self.render_mode = render_mode
         super().__init__(
@@ -99,7 +99,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             robot_actions = actions[f'blue_{i}'].copy()
             angle = self.frame.robots_blue[i].theta
             v_x, v_y, v_theta = self.convert_actions(robot_actions, np.deg2rad(angle))
-            cmd = Robot(yellow=False, id=i, v_x=v_x, v_y=v_y, v_theta=v_theta, kick_v_x=self.kick_speed_x if robot_actions[3] > 0 else 0.)
+            cmd = Robot(yellow=False, id=i, v_x=v_x, v_y=v_y, v_theta=v_theta, kick_v_x=0)
             commands.append(cmd)
         
         for i in range(self.n_robots_yellow):
@@ -107,7 +107,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             angle = self.frame.robots_yellow[i].theta
             v_x, v_y, v_theta = self.convert_actions(robot_actions, np.deg2rad(angle))
 
-            cmd = Robot(yellow=True, id=i, v_x=v_x, v_y=v_y, v_theta=v_theta, kick_v_x=self.kick_speed_x if robot_actions[3] > 0 else 0.)
+            cmd = Robot(yellow=True, id=i, v_x=v_x, v_y=v_y, v_theta=v_theta, kick_v_x=0)
             commands.append(cmd)
 
         return commands
@@ -368,7 +368,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         
         for i in range(self.default_players - len(allys) - 1):
             print("não é pra entrar aqui")
-            x_al, y_al, sin_al, cos_al, theta_al = 0, 0, 0, 0, 0
+            x_al, y_al, sin_al, cos_al, theta_al = -1, -1, 0, 0, 0
             sin_AlR, cos_AlR, theta_AlR = 0, 0, 0
             ally_dist = 0
             positions.append([x_al, y_al])
@@ -389,7 +389,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             angles.append([sin_AdR, cos_AdR, theta_AdR])
 
         for i in range(self.default_players - len(adversaries)):
-            x_adv, y_adv, sin_adv, cos_adv, theta_adv = 0, 0, 0, 0, 0
+            x_adv, y_adv, sin_adv, cos_adv, theta_adv = -1, -1, 0, 0, 0
             sin_AdR, cos_AdR, theta_AdR = 0, 0, 0
             adv_dist = 0
             positions.append([x_adv, y_adv])
