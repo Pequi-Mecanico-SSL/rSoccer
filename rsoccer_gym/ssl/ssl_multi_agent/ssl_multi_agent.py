@@ -144,7 +144,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         for weight, reward_func, list_attr in self.dense_rewards:
             kwargs = {attr: getattr(self, attr) for attr in list_attr}
             reward_result = reward_func(
-                self.field, self.frame, self.last_frame, 
+                self.field_info, self.observation, self.last_observation, 
                 left="blue", right="yellow", 
                 **kwargs
             )
@@ -193,6 +193,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         self.steps = 0
         self.last_frame = None
         self.sent_commands = None
+        self.last_observation = None
 
 
         initial_pos_frame: Frame = self._get_initial_positions_frame(seed)
@@ -204,10 +205,10 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         blue = {f'blue_{i}': {} for i in range(self.n_robots_blue)}
         yellow = {f'yellow_{i}':{} for i in range(self.n_robots_yellow)}
         info = {**blue, **yellow}
-        observation = self._frame_to_observations()
+        self.observation = self._frame_to_observations()
         self.score = {'blue': 0, 'yellow': 0}
 
-        return observation, info
+        return self.observation.copy(), info
   
     def _get_initial_positions_frame(self, seed):
         '''Returns the position of each robot and ball for the initial frame'''
@@ -252,6 +253,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             pos_frame.robots_yellow[i] = Robot(x=pos[0], y=pos[1], theta=pos[2])
 
         return pos_frame
+    
     def _frame_to_observations(self):
         rblue = self.frame.robots_blue
         ryellow = self.frame.robots_yellow
@@ -261,6 +263,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             "ball": {"x": self.frame.ball.x, "y": self.frame.ball.y}
         }
         return observation
+    
     def step(self, action):
         self.steps += 1
         # Join agent action with environment actions
@@ -274,7 +277,8 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         self.frame = self.rsim.get_frame()
 
         # Calculate environment observation, reward and done condition
-        observations = self._frame_to_observations()
+        self.last_observation = self.observation
+        self.observation = self._frame_to_observations()
         
         reward, done, truncated = self._calculate_reward_done()
 
@@ -294,7 +298,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             for i in range(self.n_robots_yellow):
                 infos[f'yellow_{i}']["score"] = self.score.copy()
         
-        return observations, reward, done, truncated, infos
+        return self.observation.copy(), reward, done, truncated, infos
 
 class SSLMultiAgentEnv_record(RecordVideo, MultiAgentEnv):
     def __init__(self, *args, **kwargs):

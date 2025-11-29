@@ -132,7 +132,7 @@ def decorator_observations(obs_func):
 
 class AttributeWrapper():
     def __getattribute__(self, attr):
-        if attr in ["reset", "step", "render", "close", "base_env", "obs_size"]:
+        if attr in ["reset", "step", "close", "base_env", "obs_size"]:
             #breakpoint()
             return object.__getattribute__(self, attr)
         
@@ -189,16 +189,18 @@ class ObservationWrapper(AttributeWrapper):
         return observations, obs_size
 
     def reset(self, *args, **kwargs):
-        raw_observations, info = self.base_env.reset(*args, **kwargs)
-        observations, obs_size = self._calculate_observations(raw_observations)
+        self.last_observation = None
+        self.observations, info = self.base_env.reset(*args, **kwargs)
+        observations, obs_size = self._calculate_observations(self.observations)
         self.obs_size = obs_size
         self._reset_stack()
         self._update_stack(observations)
         return self.stack_obs, info
     
     def step(self, action):
-        raw_observations, reward, done, truncated, info = self.base_env.step(action)
-        observations = self._calculate_observations(raw_observations)
+        self.last_observation = self.observations.copy()
+        self.observations, reward, done, truncated, info = self.base_env.step(action)
+        observations, _ = self._calculate_observations(self.observations)
         self._update_stack(observations)
         return self.stack_obs, reward, done, truncated, info
 
