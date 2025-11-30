@@ -1,5 +1,7 @@
 import numpy as np
 import gymnasium as gym
+from gymnasium.spaces import Box, Dict
+from ray.rllib.env.multi_agent_env import MultiAgentEnv
 
 
 # Base on baselines implementation
@@ -129,43 +131,48 @@ def decorator_observations(obs_func):
         return results
         
     return wrapper
-
-class AttributeWrapper():
-    def __getattribute__(self, attr):
-        if attr in ["reset", "step", "close", "base_env", "obs_size"]:
-            #breakpoint()
-            return object.__getattribute__(self, attr)
-        
-        base_env = object.__getattribute__(self, "base_env")
-
-        if hasattr(base_env, attr):
-            return getattr(base_env, attr)
-        
-        return object.__getattribute__(self, attr)
     
-class ObservationWrapper(AttributeWrapper):
+class StackWrapper(MultiAgentEnv):
     def __init__(self, base_env, stack_size, observation_funcs, *args, **kwargs):
         #super().__init__()
         self.base_env = base_env
         self.stack_size = stack_size
         self.observation_funcs = observation_funcs
+
+        n_blue = self.base_env.n_robots_blue
+        n_yellow = self.base_env.n_robots_yellow
+        self.reset()
+        self.observation_space = Dict(
+            **{f'blue_{i}': Box(low=-1, high=1, shape=(self.stack_size * self.obs_size,), dtype=np.float64) for i in range(n_blue)},
+            **{f'yellow_{i}':Box(low=-1, high=1, shape=(self.stack_size * self.obs_size,), dtype=np.float64) for i in range(n_yellow)}
+        )
     
-    def _reset_stack(self):
-        self.stack_obs = {
-            **{f'blue_{i}': np.zeros(self.stack_size * self.obs_size, dtype=np.float64) for i in range(self.base_env.n_robots_blue)},
-            **{f'yellow_{i}': np.zeros(self.stack_size * self.obs_size, dtype=np.float64) for i in range(self.base_env.n_robots_yellow)}
+    def __getattr__(self, attr):
+        return getattr(self.base_env, attr)
+
+    
+    def _reset_stack(self, obs_size):
+        stack_obs = {
+            **{f'blue_{i}': np.zeros(self.stack_size * obs_size, dtype=np.float64) for i in range(self.base_env.n_robots_blue)},
+            **{f'yellow_{i}': np.zeros(self.stack_size * obs_size, dtype=np.float64) for i in range(self.base_env.n_robots_yellow)}
         }
 
-    def _update_stack(self, observations):
+        return stack_obs
+
+
+    def _update_stack(self, stack_obs, observations):
         for agent, obs in observations.items():       
-            self.stack_obs[agent] = np.concatenate([
+            stack_obs[agent] = np.concatenate([
                 np.delete(
-                    self.stack_obs[agent], 
+                    stack_obs[agent], 
                     range(len(obs))
                 ), # remove oldest observation
                 obs
             ], axis=0, dtype=np.float64)
+        
+        return stack_obs
     
+
     def _calculate_observations(self, raw_observations):
         observations = {
             **{f'blue_{i}': np.zeros(0, dtype=np.float64) for i in range(self.base_env.n_robots_blue)},
@@ -173,7 +180,13 @@ class ObservationWrapper(AttributeWrapper):
         }
         obs_size = 0
         for observation_func, class_attrs in self.observation_funcs:
-            kwargs = {attr: getattr(self.base_env, attr) for attr in class_attrs}
+            kwargs = {
+                attr: (
+                    getattr(self.base_env, attr, None) or
+                    getattr(self, attr, None)
+                )
+                for attr in class_attrs
+            }
             obs_result = observation_func(
                 self.base_env.n_robots_blue, 
                 self.base_env.n_robots_yellow, 
@@ -188,43 +201,29 @@ class ObservationWrapper(AttributeWrapper):
 
         return observations, obs_size
 
+
     def reset(self, *args, **kwargs):
-        self.last_observation = None
-        self.observations, info = self.base_env.reset(*args, **kwargs)
-        observations, obs_size = self._calculate_observations(self.observations)
-        self.obs_size = obs_size
-        self._reset_stack()
-        self._update_stack(observations)
-        return self.stack_obs, info
-    
-    def step(self, action):
-        self.last_observation = self.observations.copy()
-        self.observations, reward, done, truncated, info = self.base_env.step(action)
-        observations, _ = self._calculate_observations(self.observations)
-        self._update_stack(observations)
-        return self.stack_obs, reward, done, truncated, info
-
-
-class LastActionsWrapper(AttributeWrapper):
-    def __init__(self, base_env, *args, **kwargs):
-        #super().__init__()
-        self.base_env = base_env
-        self._reset_last_actions()
-
-    def _reset_last_actions(self):
         self.last_actions = {
             **{f'blue_{i}': np.zeros(4) for i in range(self.base_env.n_robots_blue)}, 
             **{f'yellow_{i}': np.zeros(4) for i in range(self.base_env.n_robots_yellow)}
         }
 
-    def reset(self, *args, **kwargs):
-        observations, info = self.base_env.reset()
-        self._reset_last_actions()
-        return observations, info
+        raw_observations, info = self.base_env.reset(*args, **kwargs)
+        observations, obs_size = self._calculate_observations(raw_observations)
+        stack_obs = self._reset_stack(obs_size)
+        self.stack_obs = self._update_stack(stack_obs, observations)
+
+        self.obs_size = obs_size
+        return self.stack_obs, info
     
+
     def step(self, action):
-        observations, reward, done, truncated, info = self.base_env.step(action)
+
+        raw_observations, reward, done, truncated, info = self.base_env.step(action)
+        observations, _ = self._calculate_observations(raw_observations)
+        self.stack_obs = self._update_stack(self.stack_obs, observations)
+
         self.last_actions = action.copy()
-        return observations, reward, done, truncated, info
+        return self.stack_obs, reward, done, truncated, info
 
         
