@@ -226,4 +226,7 @@ class StackWrapper(MultiAgentEnv):
         self.last_actions = action.copy()
         return self.stack_obs, reward, done, truncated, info
 
+    def render(self, *args, **kwargs):
+        return self.base_env.render(*args, **kwargs)
+
         

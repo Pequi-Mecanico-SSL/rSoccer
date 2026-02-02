@@ -9,7 +9,7 @@ from ray.rllib.env.multi_agent_env import MultiAgentEnv
 from collections import OrderedDict
 from rsoccer_gym.Entities.Robot import Robot
 import copy
-from gymnasium.wrappers import RecordVideo, FrameStackObservation
+from gymnasium.wrappers import RecordVideo
 import random
 from rsoccer_gym.Utils.Utils import Geometry2D
 from rsoccer_gym.judges.ssl_judge import Judge
@@ -23,11 +23,14 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         field_type=2, 
         fps=40,
         match_time=40,
+        stack_observation=8,
         render_mode='human',
         dense_rewards = {},
         sparse_rewards = {},
         possession_radius_scale=3,
         direction_change_threshold=1,
+        attacker_robot_id=0,
+        defender_robot_id=0
     ):
 
         self.class_judge = judge
@@ -39,36 +42,27 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         self.render_mode = render_mode
         super().__init__(
             field_type=field_type, 
-            n_robots_blue=min(len(init_pos["blue"]), 3),
-            n_robots_yellow=min(len(init_pos["yellow"]), 3), 
+            n_robots_blue=self.n_robots_blue,
+            n_robots_yellow=self.n_robots_yellow, 
             time_step=1/fps,
             render_mode=render_mode
         )
-        self.n_robots_blue = min(len(init_pos["blue"]), 3)
-        self.n_robots_yellow = min(len(init_pos["yellow"]), 3)
-        self.score = {'blue': 0, 'yellow': 0}
-        self.field_info = {
-            "length": self.field.length,
-            "width": self.field.width,
-            "goal_width": self.field.goal_width
-        }
         self.dense_rewards = dense_rewards
         self.sparse_rewards = sparse_rewards
-        self.render_mode = render_mode
-        self.geometry = Geometry2D(
-            -self.field.length/2, 
-            self.field.length/2, 
-            -self.field.width/2, 
-            self.field.width/2
-        )
+        self.geometry = Geometry2D(-self.field.length/2, self.field.length/2, -self.field.width/2, self.field.width/2)
         self.goal_template = namedtuple('goal', ['x', 'y'])
         self.ball_template = namedtuple('ball', ['x', 'y', 'v_x', 'v_y'])
-        self._agent_ids = [
-            *[f'blue_{i}'for i in range(self.n_robots_blue)], 
-            *[f'yellow_{i}'for i in range(self.n_robots_yellow)]
-        ]
+        agent_ids_blue = [f'blue_{i}'for i in range(self.n_robots_blue)]
+        agent_ids_yellow = [f'yellow_{i}'for i in range(self.n_robots_yellow)]
+        self._agent_ids = [*agent_ids_blue, *agent_ids_yellow]
         self.max_ep_length = int(match_time*fps)
         self.fps = fps
+        self.last_actions = {
+            **{f'blue_{i}': np.zeros(4) for i in range(self.n_robots_blue)}, 
+            **{f'yellow_{i}': np.zeros(4) for i in range(self.n_robots_yellow)}
+        }
+
+        self.stack_observation = stack_observation
         # Limit robot speeds
         self.max_v = 1.5
         self.max_w = 10
@@ -76,37 +70,27 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
 
         self.init_pos = init_pos
 
-        self.obs_size = 3 #obs[f'blue_0'].shape[0]
+        self.obs_size = 77 #obs[f'blue_0'].shape[0]
+        #self.obs_size = 33
         self.act_size = 4
 
         self.actions_bound = {"low": -1, "high": 1}
 
-        blue = {f'blue_{i}': Box(
-            low=self.actions_bound["low"], 
-            high=self.actions_bound["high"], 
-            shape=(self.act_size, ), 
-            dtype=np.float64) for i in range(self.n_robots_blue)}
-        yellow = {f'yellow_{i}': Box(
-            low=self.actions_bound["low"], 
-            high=self.actions_bound["high"], 
-            shape=(self.act_size, ), 
-            dtype=np.float64) for i in range(self.n_robots_yellow)}
+        blue = {f'blue_{i}': Box(low=self.actions_bound["low"], high=self.actions_bound["high"], shape=(self.act_size, ), dtype=np.float64) for i in range(self.n_robots_blue)}
+        yellow = {f'yellow_{i}': Box(low=self.actions_bound["low"], high=self.actions_bound["high"], shape=(self.act_size, ), dtype=np.float64) for i in range(self.n_robots_yellow)}
         self.action_space =  Dict(**blue, **yellow)
 
-        blue = {f'blue_{i}': Box(
-                    low=max(-self.field.length/2, -self.field.width/2), 
-                    high=min(self.field.length/2, self.field.width/2),
-                    shape=(self.obs_size, ), 
-                    dtype=np.float64) for i in range(self.n_robots_blue)}
-        yellow = {f'yellow_{i}': Box(
-                    low=max(-self.field.length/2, -self.field.width/2), 
-                    high=min(self.field.length/2, self.field.width/2),
-                    shape=(self.obs_size, ), 
-                    dtype=np.float64) for i in range(self.n_robots_yellow)}
+        blue = {f'blue_{i}': Box(low=-self.NORM_BOUNDS - 0.001, high=self.NORM_BOUNDS + 0.001, shape=(self.stack_observation * self.obs_size, ), dtype=np.float64) for i in range(self.n_robots_blue)}
+        yellow = {f'yellow_{i}': Box(low=-self.NORM_BOUNDS - 0.001, high=self.NORM_BOUNDS + 0.001, shape=(self.stack_observation * self.obs_size, ), dtype=np.float64) for i in range(self.n_robots_yellow)}
         self.observation_space = Dict(**blue, **yellow)
 
+        self.observations = {
+            **{f'blue_{i}': np.zeros(self.stack_observation * self.obs_size, dtype=np.float64) for i in range(self.n_robots_blue)},
+            **{f'yellow_{i}': np.zeros(self.stack_observation * self.obs_size, dtype=np.float64) for i in range(self.n_robots_yellow)}
+        }
 
-
+        self.attacker_robot_id = attacker_robot_id
+        self.defender_robot_id = defender_robot_id
         self.judge_last_status, self.judge_last_info = dict(), dict()
         self.judge_status, self.judge_info = dict(), dict()
         init_frame = self._get_initial_positions_frame("kickoff")
@@ -120,18 +104,20 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
     def _get_commands(self, actions):
         commands = []
         for i in range(self.n_robots_blue):
+            attacker = self.attacker_robot_id == i
             robot_actions = actions[f'blue_{i}'].copy()
             angle = self.frame.robots_blue[i].theta
             v_x, v_y, v_theta = self.convert_actions(robot_actions, np.deg2rad(angle))
-            cmd = Robot(yellow=False, id=i, v_x=v_x, v_y=v_y, v_theta=v_theta, kick_v_x=self.kick_speed_x * max(robot_actions[3], 0))
+            cmd = Robot(yellow=False, id=i, v_x=attacker*v_x, v_y= attacker * v_y, v_theta=attacker * v_theta, kick_v_x= attacker * self.kick_speed_x * max(robot_actions[3], 0))
             commands.append(cmd)
         
         for i in range(self.n_robots_yellow):
+            defender = self.defender_robot_id == i
             robot_actions = actions[f'yellow_{i}'].copy()
             angle = self.frame.robots_yellow[i].theta
             v_x, v_y, v_theta = self.convert_actions(robot_actions, np.deg2rad(angle))
 
-            cmd = Robot(yellow=True, id=i, v_x=v_x, v_y=v_y, v_theta=v_theta, kick_v_x=self.kick_speed_x * max(robot_actions[3], 0))
+            cmd = Robot(yellow=True, id=i, v_x=defender*v_x, v_y= defender * v_y, v_theta=defender * v_theta, kick_v_x= defender * self.kick_speed_x * max(robot_actions[3], 0))
             commands.append(cmd)
 
         return commands
@@ -170,7 +156,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         for weight, reward_func, list_attr in self.dense_rewards:
             kwargs = {attr: getattr(self, attr) for attr in list_attr}
             reward_result = reward_func(
-                self.field_info, self.observation, self.last_observation, 
+                self.field, self.frame, self.last_frame, 
                 left="blue", right="yellow", 
                 **kwargs
             )
@@ -207,14 +193,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             reward_agents.update({f"blue_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
             reward_agents.update({f"yellow_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
                 
-            limit = self.field.length/2 - 0.2
-            dx = max(abs(ball.x) - limit, 0) * (-1 if ball.x > 0 else 1)
-            dy = -0.2  if ball.y > 0 else 0.2
-            initial_pos_frame: Frame = self._get_initial_positions_frame(
-                "freekick", 
-                ball_pos=[ball.x + dx, ball.y + dy], 
-                team_freekick= "yellow" if "blue" in last_touch else "blue"
-            )
+            initial_pos_frame: Frame = self._get_initial_positions_frame("kickoff")
             self.rsim.reset(initial_pos_frame)
             self.frame = self.rsim.get_frame()
         
@@ -223,43 +202,29 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             reward_agents.update({f"blue_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_blue)})
             reward_agents.update({f"yellow_{i}": self.sparse_rewards.get("OUTSIDE_REWARD", 0) for i in range(self.n_robots_yellow)})
         
-            initial_pos_frame: Frame = self._get_initial_positions_frame(
-                "freekick", 
-                ball_pos=map_freekick[self.judge_status + "_" + last_touch.split("_")[0]],
-                team_freekick="yellow" if "blue" in last_touch else "blue"
-            )
+            initial_pos_frame: Frame = self._get_initial_positions_frame("kickoff")
             self.rsim.reset(initial_pos_frame)
             self.frame = self.rsim.get_frame()
 
         
-        double_touch = False
         for robot_name, offenses in self.judge_info["offenses"].items():
             if len(offenses) == 0: continue
             reward_agents[robot_name] = 0
             for offense in offenses:
-                if offense == "DOUBLE_TOUCH":
-                    double_touch = True
-                elif offense in ["OPPONENT_DEFENSE_AREA", "TEAM_DEFENSE_AREA"]:
-                    done = {'__all__': True} # Analise if it should be done or not
+                if offense in ["OPPONENT_DEFENSE_AREA", "TEAM_DEFENSE_AREA"]:
+                    done = {'__all__': True}
                 reward_agents[robot_name] += self.sparse_rewards.get(offense, 0)
 
-        # if double_touch:
-        #     initial_pos_frame: Frame = self._get_initial_positions_frame(
-        #         "freekick", 
-        #         ball_pos=[ball.x, ball.y],
-        #         team_freekick="yellow" if "blue" in last_touch else "blue",
-        #         use_init_pos=True
-        #     )
-        #     self.rsim.reset(initial_pos_frame)
-        #     self.frame = self.rsim.get_frame()
         return reward_agents, done, truncated
 
     def reset(self, seed=42, options={}):
         self.steps = 0
         self.last_frame = None
         self.sent_commands = None
-        self.last_observation = None
 
+        # Close render window
+        # del(self.view)
+        # self.view = None
 
         self.judge_last_status, self.judge_last_info = dict(), dict()
         self.judge_status, self.judge_info = dict(), dict()
@@ -277,11 +242,11 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
 
         blue = {f'blue_{i}': {} for i in range(self.n_robots_blue)}
         yellow = {f'yellow_{i}':{} for i in range(self.n_robots_yellow)}
-        info = {**blue, **yellow}
-        self.observation = self._frame_to_observations()
         self.score = {'blue': 0, 'yellow': 0}
 
-        return self.observation.copy(), info
+        self._frame_to_observations()
+
+        return self.observations.copy(), {**blue, **yellow}
   
     def _get_initial_positions_frame(self, stage, ball_pos=None, team_freekick=None, use_init_pos=False):
         '''Returns the position of each robot and ball for the initial frame'''
@@ -320,23 +285,6 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
                 pos_frame.robots_blue[i] = Robot(x=pos[0], y=pos[1], theta=pos[2])
                 robot_list = getattr(pos_frame, f"robots_{color}")
                 robot_list[idx] = Robot(x=pos[0], y=pos[1], theta=pos[2])
-
-            
-            last_touch = self.judge_info.get("last_touch", "")
-            last_touch = "" if last_touch is None else last_touch
-            team_last_touch =  last_touch.split("_")[0]
-            kickoff_team = np.random.choice(["blue", "yellow"])
-            if team_last_touch == "yellow":
-                kickoff_team = "blue"
-            elif team_last_touch == "blue":
-                kickoff_team = "yellow"
-
-            robots_list = getattr(pos_frame, f"robots_{kickoff_team}")
-            robots_list[0] = Robot(
-                x= 0.2 * -(robots_list[0].x / abs(robots_list[0].x)), 
-                y= 0.0, 
-                theta= robots_list[0].theta + 180.0
-            )
 
 
         elif stage == "freekick":
@@ -382,16 +330,206 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             )
 
         return pos_frame
-    
+
+    def _get_pos(self, obj):
+
+        x = self.norm_pos(obj.x)
+        y = self.norm_pos(obj.y)
+        v_x = self.norm_v(obj.v_x)
+        v_y = self.norm_v(obj.v_y)
+        
+        theta = np.deg2rad(obj.theta) if hasattr(obj, 'theta') else None
+        sin = np.sin(theta) if theta is not None else None
+        cos = np.cos(theta) if theta is not None else None
+        theta = np.arctan2(sin, cos)/np.pi if theta is not None else None
+        v_theta = self.norm_w(obj.v_theta) if theta is not None else None
+        #tan = np.tan(theta) if theta else None
+
+        return x, y, v_x, v_y, sin, cos, theta, v_theta
+
+    def inverted_robot(self, robot):
+        return Robot(
+            x=-robot.x, 
+            y=robot.y, 
+            theta= 180 - robot.theta if robot.theta < 180 else 540 - robot.theta, 
+            v_x=-robot.v_x, 
+            v_y=-robot.v_y, 
+            v_theta=-robot.v_theta
+        )
+
     def _frame_to_observations(self):
-        rblue = self.frame.robots_blue
-        ryellow = self.frame.robots_yellow
-        observation = {
-            **{f"blue_{i}": {"x": rblue[i].x, "y": rblue[i].y, "theta": rblue[i].theta} for i in range(self.n_robots_blue)},
-            **{f"yellow_{i}": {"x": ryellow[i].x, "y": ryellow[i].y, "theta": ryellow[i].theta} for i in range(self.n_robots_yellow)},
-            "ball": {"x": self.frame.ball.x, "y": self.frame.ball.y}
-        }
-        return observation
+
+        # print("=====================================OBSERVATION===================================================")
+        f = lambda x: " ".join([f"{i:.2f}" for i in x])
+        for i in range(self.n_robots_blue):
+            robot = self.frame.robots_blue[i] 
+            robot_action = self.last_actions[f'blue_{i}']
+            allys = [self.frame.robots_blue[j] for j in range(self.n_robots_blue) if j != i]
+            allys_actions = [self.last_actions[f'blue_{j}'] for j in range(self.n_robots_blue) if j != i]
+            advs = [self.frame.robots_yellow[j] for j in range(self.n_robots_yellow)]
+
+            ball = self.ball_template(x=self.frame.ball.x, y=self.frame.ball.y, v_x=self.frame.ball.v_x, v_y=self.frame.ball.v_y)
+
+            goal_adv = self.goal_template(x=   0.2 + self.field.length/2, y=0)
+            goal_ally = self.goal_template(x= -0.2 - self.field.length/2, y=0)
+
+            robot_obs = self.robot_observation(robot, allys, advs, robot_action, allys_actions, ball, goal_adv, goal_ally)
+            self.observations[f'blue_{i}'] = np.delete(self.observations[f'blue_{i}'], range(len(robot_obs)))
+            self.observations[f'blue_{i}'] = np.concatenate([self.observations[f'blue_{i}'], robot_obs], axis=0, dtype=np.float64)
+
+            # if i == 1:
+            #     print(f"blue_{i}")
+            #     print(f"\tX={robot.x}\tY={robot.y}\tTheta={robot.theta}\tVx={robot.v_x}\tVy={robot.v_y}\tVtheta={robot.v_theta}")
+            #     print(f"\t pos: {f(robot_obs[:14])} \n\t ori: {f(robot_obs[14:32])} \n\t dist: {f(robot_obs[32:40])} \n\t ang: {f(robot_obs[40:64])} \n\t last_act: {f(robot_obs[64:76])} \n\t time_left: {robot_obs[76]}")
+
+        for i in range(self.n_robots_yellow):
+            robot = self.inverted_robot(self.frame.robots_yellow[i])
+            robot_action = self.last_actions[f'yellow_{i}']
+            allys = [self.inverted_robot(self.frame.robots_yellow[j]) for j in range(self.n_robots_yellow) if j != i]
+            allys_actions = [self.last_actions[f'yellow_{j}'] for j in range(self.n_robots_yellow) if j != i]
+            advs = [self.inverted_robot(self.frame.robots_blue[j]) for j in range(self.n_robots_blue)]
+
+            ball = self.ball_template(x=-self.frame.ball.x, y=self.frame.ball.y, v_x=-self.frame.ball.v_x, v_y=self.frame.ball.v_y)
+
+            goal_adv = self.goal_template(x=  -(-0.2 - self.field.length/2), y=0)
+            goal_ally = self.goal_template(x= -( 0.2 + self.field.length/2), y=0)
+            
+            robot_obs = self.robot_observation(robot, allys, advs, robot_action, allys_actions, ball, goal_adv, goal_ally)
+
+            self.observations[f'yellow_{i}'] = np.delete(self.observations[f'yellow_{i}'], range(len(robot_obs)))
+            self.observations[f'yellow_{i}'] = np.concatenate([self.observations[f'yellow_{i}'], robot_obs], axis=0, dtype=np.float64)
+
+            # if i == 1:
+            #     print(f"\nyellow_{i}")
+            #     print(f"\tX={robot.x}\tY={robot.y}\tTheta={robot.theta}\tVx={robot.v_x}\tVy={robot.v_y}\tVtheta={robot.v_theta}")
+            #     print(f"\t pos: {f(robot_obs[:14])} \n\t ori: {f(robot_obs[14:32])} \n\t dist: {f(robot_obs[32:40])} \n\t ang: {f(robot_obs[40:64])} \n\t last_act: {f(robot_obs[64:76])} \n\t time_left: {robot_obs[76]}")
+
+    def robot_observation(self, robot, allys, adversaries, robot_action, allys_actions, ball, goal_adv, goal_ally):
+
+        positions = []
+        orientations = []
+        dists = []
+        angles = []
+        last_actions = np.array([robot_action] + allys_actions).flatten()
+
+        x_b, y_b, *_ = self._get_pos(ball)
+        sin_BG_al, cos_BG_al, theta_BG_al = self.geometry._get_2dots_angle_between(goal_ally, ball)
+        sin_BG_ad, cos_BG_ad, theta_BG_ad = self.geometry._get_2dots_angle_between(goal_adv, ball)
+        dist_BG_al = self.geometry._get_dist_between(ball, goal_ally)
+        dist_BG_ad = self.geometry._get_dist_between(ball, goal_adv)
+
+        x_r, y_r, *_, sin_r, cos_r, theta_r, _  = self._get_pos(robot)
+        sin_BR, cos_BR, theta_BR = self.geometry._get_2dots_angle_between(ball, robot)
+        dist_BR = self.geometry._get_dist_between(ball, robot)
+
+        positions.append([x_r, y_r])
+        orientations.append([sin_r, cos_r, theta_r])
+        #orientations.append([theta_r])
+        dists.append([dist_BR, dist_BG_al, dist_BG_ad])
+        angles.append([
+            sin_BR, cos_BR, theta_BR, 
+            sin_BG_al, cos_BG_al, theta_BG_al, 
+            sin_BG_ad, cos_BG_ad, theta_BG_ad
+        ])
+
+        for ally in allys:
+            x_al, y_al, *_, sin_al, cos_al, theta_al, _ = self._get_pos(ally)
+            sin_AlR, cos_AlR, theta_AlR = self.geometry._get_2dots_angle_between(ally, robot)
+            ally_dist = self.geometry._get_dist_between(ally, robot)
+            positions.append([x_al, y_al])
+            orientations.append([sin_al, cos_al, theta_al])
+            #orientations.append([theta_al])
+            dists.append([ally_dist])
+            angles.append([sin_AlR, cos_AlR, theta_AlR])
+        
+        for i in range(self.default_players - len(allys) - 1):
+            print("não é pra entrar aqui")
+            x_al, y_al, sin_al, cos_al, theta_al = 0, 0, 0, 0, 0
+            sin_AlR, cos_AlR, theta_AlR = 0, 0, 0
+            ally_dist = 0
+            positions.append([x_al, y_al])
+            orientations.append([sin_al, cos_al, theta_al])
+            # orientations.append([theta_al])
+            dists.append([ally_dist])
+            angles.append([sin_AlR, cos_AlR, theta_AlR])
+
+        
+        for adv in adversaries:
+            x_adv, y_adv, *_,  sin_adv, cos_adv, theta_adv, _ = self._get_pos(adv)
+            sin_AdR, cos_AdR, theta_AdR = self.geometry._get_2dots_angle_between(adv, robot)
+            adv_dist = self.geometry._get_dist_between(adv, robot)
+            positions.append([x_adv, y_adv])
+            orientations.append([sin_adv, cos_adv, theta_adv])
+            #orientations.append([theta_adv])
+            dists.append([adv_dist])
+            angles.append([sin_AdR, cos_AdR, theta_AdR])
+
+        for i in range(self.default_players - len(adversaries)):
+            x_adv, y_adv, sin_adv, cos_adv, theta_adv = 0, 0, 0, 0, 0
+            sin_AdR, cos_AdR, theta_AdR = 0, 0, 0
+            adv_dist = 0
+            positions.append([x_adv, y_adv])
+            orientations.append([sin_adv, cos_adv, theta_adv])
+            #orientations.append([theta_adv])
+            dists.append([adv_dist])
+            angles.append([sin_AdR, cos_AdR, theta_AdR])
+
+        positions.append([x_b, y_b])
+
+        positions = np.concatenate(positions)
+        orientations = np.concatenate(orientations)
+        dists = np.concatenate(dists)
+        angles = np.concatenate(angles)
+        time_left = [(self.max_ep_length - self.steps)/self.max_ep_length]
+
+        #print(f"len_pos: {len(positions)} \t len_ori: {len(orientations)} \t len_dist: {len(dists)} \t len_ang: {len(angles)} \t len_last_act: {len(last_actions)} \t len_time_left: {len(time_left)}")
+        robot_obs = np.concatenate([positions, orientations, dists, angles, last_actions, time_left], dtype=np.float64)
+        # robot_obs = np.concatenate([positions, last_actions, time_left], dtype=np.float64)
+        return robot_obs
+    
+    def _friendly_observation(self, obs):
+        friendly_obs = {'pos': {}, 'ori': {}, 'dist': {}, 'ang': {}, 'last_act': {}, 'time_left': {}}
+
+        friendly_obs["pos"]["robot"]   = obs[ 0: 2]
+        friendly_obs["pos"][f"ally_0"] = obs[ 2: 4]
+        friendly_obs["pos"][f"ally_1"] = obs[ 4: 6]
+        friendly_obs["pos"][f"adv_0"]  = obs[ 6: 8]
+        friendly_obs["pos"][f"adv_1"]  = obs[ 8:10]
+        friendly_obs["pos"][f"adv_2"]  = obs[10:12]
+        friendly_obs["pos"]["ball"]    = obs[12:14]
+
+        friendly_obs["ori"]["robot"]   = obs[14:17]
+        friendly_obs["ori"][f"ally_0"] = obs[17:20]
+        friendly_obs["ori"][f"ally_1"] = obs[20:23]
+        friendly_obs["ori"][f"adv_0"]  = obs[23:26]
+        friendly_obs["ori"][f"adv_1"]  = obs[26:29]
+        friendly_obs["ori"][f"adv_2"]  = obs[29:32]
+
+        friendly_obs["dist"]["dist_BR"]    = obs[32:33]
+        friendly_obs["dist"]["dist_BG_al"] = obs[33:34]
+        friendly_obs["dist"]["dist_BG_ad"] = obs[34:35]
+        friendly_obs["dist"]["ally_0"]     = obs[35:36]
+        friendly_obs["dist"]["ally_1"]     = obs[36:37]
+        friendly_obs["dist"]["adv_0"]      = obs[37:38]
+        friendly_obs["dist"]["adv_1"]      = obs[38:39]
+        friendly_obs["dist"]["adv_2"]      = obs[39:40]
+
+        friendly_obs["ang"]["ball_robot"]     = obs[40:43]
+        friendly_obs["ang"]["ball_goal_ally"] = obs[43:46]
+        friendly_obs["ang"]["ball_goal_adv"]  = obs[46:49]
+        friendly_obs["ang"]["ally_0"]         = obs[49:52]
+        friendly_obs["ang"]["ally_1"]         = obs[52:55]
+        friendly_obs["ang"]["adv_0"]          = obs[55:58]
+        friendly_obs["ang"]["adv_1"]          = obs[58:61]
+        friendly_obs["ang"]["adv_2"]          = obs[61:64]
+
+        friendly_obs["last_act"]["robot"]   = obs[64:68]
+        friendly_obs["last_act"][f"ally_0"] = obs[68:72]
+        friendly_obs["last_act"][f"ally_1"] = obs[72:76]
+
+        friendly_obs["time_left"] = obs[76:77]
+
+        return friendly_obs
     
     def step(self, action):
         self.steps += 1
@@ -401,14 +539,14 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
         self.rsim.send_commands(commands)
         self.sent_commands = commands
 
+        self.last_actions = action.copy()
+
         # Get Frame from simulator
         self.last_frame = self.frame
         self.frame = self.rsim.get_frame()
 
         # Calculate environment observation, reward and done condition
-        self.last_observation = self.observation
-        self.observation = self._frame_to_observations()
-        
+        self._frame_to_observations()
         reward, done, truncated = self._calculate_reward_done()
 
         if self.steps >= self.max_ep_length:
@@ -427,7 +565,7 @@ class SSLMultiAgentEnv(SSLBaseEnv, MultiAgentEnv):
             for i in range(self.n_robots_yellow):
                 infos[f'yellow_{i}']["score"] = self.score.copy()
         
-        return self.observation.copy(), reward, done, truncated, infos
+        return self.observations.copy(), reward, done, truncated, infos
 
 class SSLMultiAgentEnv_record(RecordVideo, MultiAgentEnv):
     def __init__(self, *args, **kwargs):
